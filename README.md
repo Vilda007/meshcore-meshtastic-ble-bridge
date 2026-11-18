@@ -23,7 +23,9 @@ DMs are never bridged.
 > indoor nodes with *(very)* limited radio range. Most of the traffic you
 > may see on the bridged channels is Czech chat and test messages — don't
 > be surprised, and don't expect to reach the test nodes from afar. The
-> bridge's range depends entirely on the radios you attach to it.
+> test `#meshbridge` channel join credentials (MeshCore key + Meshtastic
+> PSK) are deliberately published in [Shared channel](#shared-channel-meshbridge)
+> — if you're within range, add both and try the bridge end to end.
 
 ## Highlights
 
