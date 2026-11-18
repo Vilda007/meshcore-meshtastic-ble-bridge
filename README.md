@@ -253,17 +253,26 @@ MeshCore has no "public channels by name" — a channel *is* its 16-byte key
 a channel is public when it uses the default PSK (`AQ==`), joinable by name.
 So a shared channel needs a different setup on each side.
 
-The reference installation bridges a shared channel named **`#meshbridge`**:
+The reference installation bridges a shared channel named **`#meshbridge`**.
+Its join credentials are **intentionally published** — anyone within radio
+range of the test mesh (see the note above) can add both channels and try
+the bridge end to end:
 
-| Side | Channel setup |
+| Side | Join the test channel with |
 |---|---|
-| **MeshCore** | Keyed channel: lowercase name `#meshbridge` + its own generated 16-byte key (the `mc_channel_key` setting). The key **is** the channel and is a *secret* — the test bridge's key is intentionally not published; if you want to join the test channel, ask the maintainer. (MeshCore channel names must be lowercase.) |
-| **Meshtastic** | Public by convention: a secondary channel named `#meshbridge` with the default PSK `AQ==` — anyone can join simply by adding a channel with the same name and default key. |
+| **MeshCore** | Name `#meshbridge` + key hex `68cefaeb671795cd8ba4a62f945bf54c` (base64 `aM7662cXlc2LpKYvlFv1TA==`). In MeshCore the key *is* the channel (`SHA256(key)` = channel hash) — add a channel with this exact name **and** key. Channel names must be lowercase. |
+| **Meshtastic** | Name `#meshbridge` with the default PSK `AQ==` — public by convention, just add a channel of the same name. |
 
-For your own installation, generate your own MeshCore channel key (e.g.
-`python3 -c "import os; print(os.urandom(16).hex())"`), put the name/key/PSK
-in the `channels.*` settings, and let `create_channel.py` set the channel up
-on both devices (idempotent; it reads everything from the configuration):
+> Normally a MeshCore channel key is a **secret** — anyone holding it can
+> read and write the channel, and there are no "public channels by name" in
+> MeshCore. This test channel is deliberately open; if it ever gets abused,
+> it can simply be rekeyed. **For your own installation, generate your own
+> key** (e.g. `python3 -c "import os; print(os.urandom(16).hex())"`) and
+> share it only with people you want in the channel.
+
+Put the name/key/PSK in the `channels.*` settings and let
+`create_channel.py` set the channel up on both devices (idempotent; it
+reads everything from the configuration):
 
 ```bash
 sudo systemctl stop mesh-bridge
