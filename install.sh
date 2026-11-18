@@ -27,7 +27,9 @@ if [ ! -d "$BRIDGE_DIR/venv" ]; then
     python3 -m venv "$BRIDGE_DIR/venv"
 fi
 "$BRIDGE_DIR/venv/bin/pip" install --upgrade pip
-"$BRIDGE_DIR/venv/bin/pip" install bleak meshtastic
+# pycryptodome je volitelne (repeat-echo potvrzeni doruceni); bez nej
+# bridge bezi jen s TX-counter potvrzenim
+"$BRIDGE_DIR/venv/bin/pip" install bleak meshtastic pycryptodome
 "$BRIDGE_DIR/venv/bin/python" -c "import bleak, meshtastic; print('libraries OK')"
 
 # 3) clock (for reliable timestamps)

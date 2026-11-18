@@ -10,6 +10,9 @@ deploy.local
 
 # --- runtime data (created by the bridge/dashboard on the device) ---
 events.jsonl
+stats.db
+stats.db-wal
+stats.db-shm
 status.json
 status.json.tmp
 mappings.json

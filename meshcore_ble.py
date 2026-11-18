@@ -9,6 +9,9 @@ MeshCore/docs/companion_protocol.md a examples/companion_radio/MyMesh.cpp):
   - prijem zprav: PUSH_CODE_MSG_WAITING (0x83) + CMD_SYNC_NEXT_MESSAGE (0x0A)
     + periodicky poll (drzi BLE linku ziva a vyzvedne co se minulo)
   - odesilani kanalovych zprav: CMD_SEND_CHANNEL_TXT_MSG (0x03)
+    + predikce vysilaneho payloadu (AES-128-ECB je deterministicky ->
+      repeat-echo nasi zpravy lze spoznat v raw RX snifferu 0x88)
+  - statistiky radia: CMD_GET_STATS / STATS_TYPE_PACKETS (v8+)
   - udrzba: CMD_GET_CONTACTS (0x04) -> CMD_REMOVE_CONTACT (0x0F)
   - auto-reconnect s exponencialnim backoffem
 
@@ -17,6 +20,7 @@ prikaz se rozpoznava podle typu ramce; jeden prikaz v dany okamzik (zamek).
 """
 
 import asyncio
+import hashlib
 import logging
 import struct
 import time
@@ -41,6 +45,11 @@ CMD_REMOVE_CONTACT = 0x0F
 CMD_GET_CHANNEL = 0x1F
 CMD_SET_CHANNEL = 0x20
 CMD_DEVICE_QUERY = 0x16
+CMD_GET_STATS = 56          # v8+; druhy bajt = sub-type statistiky
+STATS_TYPE_PACKETS = 2
+
+# typ payloadu v raw packetu (packet_format.md)
+PAYLOAD_TYPE_GRP_TXT = 0x05
 
 # typy ramcu (companion_protocol.md)
 PKT_OK = 0x00
@@ -59,6 +68,7 @@ PKT_DEVICE_INFO = 0x0D
 PKT_CONTACT_MSG_RECV_V3 = 0x10
 PKT_CHANNEL_MSG_RECV_V3 = 0x11
 PKT_CHANNEL_INFO = 0x12
+PKT_STATS = 24              # RESP_CODE_STATS (0x18; viz stats_binary_frames.md)
 PKT_ADVERTISEMENT = 0x80
 PKT_ACK = 0x82
 PKT_MSG_WAITING = 0x83
@@ -160,24 +170,78 @@ def parse_contact_frame(frame):
     }
 
 
+def parse_raw_packet(raw):
+    """MeshCore raw packet (packet_format.md) -> dict, nebo None.
+
+    Struktura: [header][transport_codes?][path_len][path][payload].
+    Vraci {'route','payload_type','payload'}; transport codes a path
+    (hash size 1-3 B, hops 0-63) se preskoci.
+    """
+    if not raw or len(raw) < 3:
+        return None
+    header = raw[0]
+    route = header & 0x03
+    off = 1
+    if route in (0x00, 0x03):     # TRANSPORT_FLOOD / TRANSPORT_DIRECT
+        off += 4
+    if len(raw) < off + 1:
+        return None
+    plen = raw[off]
+    off += 1 + (plen & 0x3F) * (((plen >> 6) & 0x03) + 1)
+    if off > len(raw):
+        return None
+    return {"route": route, "payload_type": (header >> 2) & 0x0F,
+            "payload": raw[off:]}
+
+
+def expected_group_payload(channel_secret, node_name, ts, text):
+    """Predpoved payloadu, ktery firmware odvysi jako GRP_TXT nasi zpravu.
+
+    BaseChatMesh::sendGroupMessage + Mesh::createGroupDatagram:
+      plaintext = ts LE (4 B) + 0x00 + "<node_name>: <text>"
+      sifrovani = AES-128-ECB zero-padded (zadny IV -> deterministicky!)
+      payload   = SHA256(secret)[0] (1 B) + HMAC MAC (2 B) + ciphertext
+
+    MAC nespocteme (fw klicuje HMAC 32 B nad 16 B secret), proto vracime
+    jen (channel_hash, ciphertext) a porovnavame payload[3:].
+
+    Vraci (channel_hash, ciphertext) nebo None (chybi pycryptodome / klic).
+    """
+    try:
+        from Crypto.Cipher import AES   # pycryptodome
+    except ImportError:
+        log.debug("MC: chybi pycryptodome -- repeat-echo potvrzeni vypnuto")
+        return None
+    pt = (struct.pack("<I", ts) + b"\x00"
+          + f"{node_name}: {text}".encode("utf-8"))
+    pad = (-len(pt)) % 16
+    ct = AES.new(bytes(channel_secret), AES.MODE_ECB).encrypt(pt + b"\x00" * pad)
+    return hashlib.sha256(bytes(channel_secret)).digest()[0], ct
+
+
 class MeshCoreClient:
     """BLE klient MeshCore zarizeni; spousti se jako asyncio task run()."""
 
     def __init__(self, on_message, *, name_filter=None, poll_interval=30.0,
-                 app_name="bridge"):
+                 app_name="bridge", on_raw_rx=None):
         """
         on_message  -- async callback(text, channel_idx, timestamp)
         name_filter -- Podretezec BLE jmena zarizeni (napr. "MyCoreNode");
                        None = prvni MeshCore companion ve skenu.
+        on_raw_rx   -- async callback(pkt dict) pro kazdy prijaty raw
+                       packet (sniffer PUSH_CODE_LOG_RX_DATA; slouzi
+                       k repeat-echo potvrzeni odvyslanych zprav).
         """
         self.on_message = on_message
         self.name_filter = name_filter
         self.poll_interval = poll_interval
         self.app_name = app_name
+        self.on_raw_rx = on_raw_rx
 
         self.info = {}
         self.device_info = {}
         self.connected = False
+        self._stats_ok = None    # None=nezjisteno, bool = CMD_GET_STATS podpora
 
         self._client = None
         self._loop = None
@@ -186,6 +250,7 @@ class MeshCoreClient:
         self._disconnected_evt = asyncio.Event()
         self._msg_waiting = asyncio.Event()
         self._in_queue = asyncio.Queue()
+        self._raw_queue = asyncio.Queue()
         self._expect_types = None
         self._expect_frames = []
         self._expect_evt = asyncio.Event()
@@ -200,6 +265,7 @@ class MeshCoreClient:
         self._tasks = [
             asyncio.create_task(self._drain_loop(), name="mc-drain"),
             asyncio.create_task(self._dispatch_loop(), name="mc-dispatch"),
+            asyncio.create_task(self._raw_loop(), name="mc-raw"),
         ]
         backoff = 5
         while self._running:
@@ -303,14 +369,36 @@ class MeshCoreClient:
             self._msg_waiting.set()
         elif t in (PKT_CHANNEL_MSG_RECV, PKT_CHANNEL_MSG_RECV_V3):
             self._in_queue.put_nowait(frame)
+        elif t == PKT_LOG_DATA:
+            # raw RX sniffer: [0]=0x88 [1]=SNR*4 [2]=RSSI [3:]=raw packet
+            self._raw_queue.put_nowait(frame)
         elif t == PKT_ERROR:
             code = frame[1] if len(frame) > 1 else -1
             log.warning("MC: PACKET_ERROR kod %s", code)
         elif t == PKT_SELF_INFO:
             self.info = parse_self_info(frame) or self.info
-        elif t in (PKT_ADVERTISEMENT, PKT_ACK, PKT_LOG_DATA,
+        elif t in (PKT_ADVERTISEMENT, PKT_ACK,
                    PKT_CONTACT_MSG_RECV, PKT_CONTACT_MSG_RECV_V3):
             pass  # nezajimaji nas (DM nebridgujeme)
+
+    async def _raw_loop(self):
+        """Konzument snifferu: dekoduje raw packet a vola on_raw_rx."""
+        while True:
+            frame = await self._raw_queue.get()
+            try:
+                if len(frame) >= 4:
+                    snr_raw = frame[1]
+                    rssi = frame[2] if frame[2] < 128 else frame[2] - 256
+                    pkt = parse_raw_packet(frame[3:])
+                    if pkt and self.on_raw_rx:
+                        pkt["snr"] = (snr_raw if snr_raw < 128
+                                      else snr_raw - 256) / 4.0
+                        pkt["rssi"] = rssi
+                        await self.on_raw_rx(pkt)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("MC: chyba pri zpracovani raw packetu")
 
     async def _dispatch_loop(self):
         while True:
@@ -395,6 +483,64 @@ class MeshCoreClient:
         if resp[0] == PKT_ERROR:
             return False
         return True
+
+    async def send_channel_message_confirm(self, channel_idx, text, *,
+                                           channel_secret=None,
+                                           node_name=None):
+        """CMD_SEND_CHANNEL_TXT_MSG + podklady pro potvrzeni doruceni.
+
+        Pred odeslanim si odecte packet-statistiky (srovnani po okne
+        potvrdi, ze radio skutecne vysilalo). Zname-li klic kanalu a jmeno
+        uzlu, spocta take presny ciphertext, ktery firmware odvysi --
+        repeat-echo pak lze spoznat bajtove presne v raw RX snifferu.
+
+        Vraci dict {'ok', 'ts', 'channel_hash', 'ct', 'pre'}: ct = None
+        znamena "echo potvrzeni nedorazuje" (chybi klic ci pycryptodome),
+        pre = packet-stats pred odeslanim (None = neznamy).
+        """
+        ts = int(time.time())
+        pre = None
+        if self._stats_supported():
+            pre = await self.get_packet_stats()
+        payload = (bytes([CMD_SEND_CHANNEL_TXT_MSG, 0x00, channel_idx])
+                   + struct.pack("<I", ts) + text.encode("utf-8"))
+        resp = await self._send_cmd(payload, expect={PKT_OK, PKT_ERROR},
+                                    timeout=10)
+        ok = bool(resp) and resp[0] == PKT_OK
+        exp = (expected_group_payload(channel_secret, node_name, ts, text)
+               if ok and channel_secret and node_name else None)
+        return {"ok": ok, "ts": ts,
+                "channel_hash": exp[0] if exp else None,
+                "ct": exp[1] if exp else None,
+                "pre": pre}
+
+    def _stats_supported(self):
+        """True/False podle prvniho pokusu CMD_GET_STATS (cache per spojeni)."""
+        if self._stats_ok is None:
+            return True      # jeste nezjisteno -- zkusime
+        return self._stats_ok
+
+    async def get_packet_stats(self):
+        """CMD_GET_STATS/STATS_TYPE_PACKETS -> dict, nebo None (starsi fw).
+
+        Citace jsou kumulativni od bootu (viz docs/stats_binary_frames.md):
+        recv, sent, flood_tx, direct_tx, flood_rx, direct_rx (+recv_errors).
+        Neuspech pri prvnim pokusu vypne dalsi dotazy (fw statistiky nema).
+        """
+        resp = await self._send_cmd(
+            bytes([CMD_GET_STATS, STATS_TYPE_PACKETS]),
+            expect={PKT_STATS, PKT_ERROR}, timeout=8)
+        if resp is not None and resp[0] == PKT_ERROR:
+            self._stats_ok = False   # fw statistiky nema; dale nezkouset
+        if resp is None or resp[0] != PKT_STATS or len(resp) < 26:
+            return None
+        self._stats_ok = True
+        out = dict(zip(("recv", "sent", "flood_tx", "direct_tx",
+                        "flood_rx", "direct_rx"),
+                       struct.unpack("<6I", resp[2:26])))
+        if len(resp) >= 30:
+            out["recv_errors"] = struct.unpack("<I", resp[26:30])[0]
+        return out
 
     async def get_channel(self, channel_idx):
         """CMD_GET_CHANNEL -> {'idx','name','secret'}; None = prazdny slot/chyba.

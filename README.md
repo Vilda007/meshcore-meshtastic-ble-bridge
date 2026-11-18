@@ -38,9 +38,40 @@ DMs are never bridged.
   background.
 - **Chunking** — long messages are split to the receiver's limit
   (MeshCore ~133 chars, Meshtastic ~233) as `[1/2]`, `[2/2]`, …
-- **Web dashboard** (port 8420, zero dependencies): live status,
-  message/event feed with filters, a power switch for the bridge service,
-  and the channel-mapping editor.
+- **Delivery confirmation on the MeshCore side** (à la hoplink): the
+  firmware's group-message encryption is deterministic AES-128-ECB
+  (no IV), so the bridge can predict the exact ciphertext it sends.
+  The companion radio streams every raw received packet
+  (`PACKET_LOG_DATA` sniffer); when a repeater re-transmits our message,
+  the bridge matches the payload byte-for-byte and logs a **repeater
+  echo** with SNR/RSSI. If no echo arrives within `mc_confirm_window`,
+  TX counters (`CMD_GET_STATS`) still tell whether the radio transmitted
+  at all. Works only when the repeater's signal reaches our node.
+- **Watchdog hardening**: the service runs as `Type=notify` with
+  `WatchdogSec=180` — the bridge pings systemd and, if the event loop
+  hangs (or a health self-check fails), systemd restarts it. The health
+  check fails when the daily maintenance has not completed within
+  `maintenance_interval_hours + health_grace_minutes`.
+- **Web dashboard** (port 8420, zero dependencies): login-protected UI in
+  **English or Czech** (flag toggle, default EN, cookie-stored) with —
+  - live status cards and the message/event feed with filters,
+    **full-text search and paging** (25 records/page, served from the
+    SQLite history)
+  - daily **statistics charts** (forwarded messages, reconnects, uptime %)
+  - the **channel-mapping editor** and a **power switch** for the bridge
+    service
+  - a **Config page** — the whole configuration lives in SQLite
+    (`stats.db`, layered over the `config.ini` defaults), editable from
+    the browser; the bridge picks changes up within ~15 s (items marked
+    ↻ need a service restart)
+  - **user management** — login/logout, user accounts with PBKDF2-hashed
+    passwords, 30-day sessions; regular users are read-only viewers,
+    admins can edit config/mapping/power/users
+- **Persistent statistics** (SQLite, `stats.db`): every forwarded message
+  and event is stored; the dashboard serves a searchable, paginated feed
+  (`/api/feed`) and daily aggregates (`/api/history`): messages/day per
+  direction, reconnects/day and connected-time % per side (computed from
+  connect/disconnect events, bridge start/stop boundaries included).
 - **Daily maintenance** — clock sync of both radios, pruning of stale
   MeshCore contacts and Meshtastic nodeDB entries (favorites are never
   removed), with a per-run removal limit and a dry-run mode.
@@ -80,7 +111,8 @@ DMs are never bridged.
 
 - Raspberry Pi OS / Debian with working BlueZ
 - Python 3.9+ (everything else is installed by `install.sh` into a venv:
-  `bleak`, `meshtastic`, `dbus-fast`, `pubsub`)
+  `bleak`, `meshtastic`, `dbus-fast`, `pubsub`, `pycryptodome` — the last
+  one is optional, only needed for exact repeat-echo confirmation)
 
 ## Installation
 
@@ -144,39 +176,53 @@ The dashboard is now at `http://<pi-ip>:8420/`.
 
 ## Configuration
 
-`config.ini` — full reference (see `config.ini.example` for a commented
-template):
+Configuration has **three layers** (lower overrides higher):
+
+1. **Code defaults** — sensible values baked into `bridge.py`
+2. **`config.ini`** — bootstrap; copy from `config.ini.example` and edit the
+   `REPLACE_WITH_…` values. Parsed at every start.
+3. **SQLite (`stats.db`, `config` table)** — editable from the dashboard
+   **Config** page (admin only); the bridge picks changes up within ~15 s.
+   `config.ini` remains the bootstrap and the source of defaults — a fresh
+   `stats.db` behaves exactly like the ini.
 
 | Section | Option | Default | Meaning |
 |---|---|---|---|
-| `[meshcore]` | `device` | *(first found)* | Substring of the MeshCore BLE name |
+| `[meshcore]` | `device` | *(first found)* | Substring of the MeshCore BLE name (↻) |
 | | `channel` | `0` | Default MC channel (fallback, no `[channels]` mappings) |
 | | `poll_interval` | `30` | Seconds between polls / keep-alives |
-| `[meshtastic]` | `device` | *(first found)* | Meshtastic BLE name or MAC |
+| `[meshtastic]` | `device` | *(first found)* | Meshtastic BLE name or MAC (↻) |
 | | `channel` | `0` | Default MT channel (fallback) |
-| `[channels]` | `mappings` | `0:0` | Bridged pairs `mc:mt, mc:mt, …`; runtime editable from the dashboard (`mappings.json` takes precedence) |
-| | `mc_channel_name` | `#meshbridge` | MC name of the shared channel (lowercase only!) |
-| | `mc_channel_key` | *(required)* | **16-byte hex** MeshCore channel key — a SECRET, never commit it |
+| `[channels]` | `mappings` | `0:0` | Bridged pairs `mc:mt, …` — edited from the dashboard (stored in SQLite) |
+| | `mc_channel_name` | `#meshbridge` | MC name of the shared channel (lowercase only) |
+| | `mc_channel_key` | *(required)* | **16-byte hex** MeshCore channel key — a SECRET, never commit |
 | | `mt_channel_name` | `#meshbridge` | MT channel name |
 | | `mt_channel_psk` | `AQ==` | MT PSK; `AQ==` = default public key (joinable by name) |
 | `[bridge]` | `prefix_to_mt` / `prefix_to_mc` | `MC:` / `MT:` | Forwarding prefixes (loop guard) |
 | | `mc_max_len` / `mt_max_len` | `120` / `200` | Max body length per side |
 | | `dedup_cache` | `400` | LRU dedup cache entries |
 | | `log_level` | `INFO` | Logging verbosity |
-| | `log_file` | *(empty)* | Rotating log file; empty = journal only |
-| | `event_log` / `status_file` | `events.jsonl` / `status.json` | Dashboard data files |
+| | `event_log` / `status_file` | `events.jsonl` / `status.json` | Dashboard data files (↻) |
+| | `mc_confirm_window` | `30` | Repeat-echo window for MeshCore delivery confirmation (s; 0 = off) |
+| | `db_file` | `stats.db` | SQLite persistence: feed, statistics, config, users (↻) |
 | `[maintenance]` | `mc_contact_max_age_days` | `14` | Prune MC contacts older than this |
 | | `mt_node_max_age_days` | `7` | Prune MT nodeDB nodes older than this |
 | | `maintenance_interval_hours` | `24` | Maintenance period |
 | | `max_removals_per_run` | `10` | Removal safety limit |
+| | `health_grace_minutes` | `90` | Health self-check grace over the maintenance period |
 | | `dry_run` | `false` | Log only, delete nothing |
+
+Items marked **↻** apply only after a service restart (the Config page
+marks them the same way).
 
 **What you must replace before use** (all gitignored — never commit):
 
 - `config.ini` — your device names, your **channel key**
+  (also editable later on the Config page)
 - `channel_info.json` (optional, from `channel_info.json.example`) — shown on
   the dashboard panel; contains credentials
 - `deploy.local` (optional) — your SSH alias for `deploy.sh`
+- the **dashboard admin password** (default `admin`/`admin`, see above)
 
 ## Shared channel (#meshbridge)
 
@@ -205,32 +251,85 @@ Then map the two channels in the dashboard (it prints the indices, e.g.
 `http://<pi-ip>:8420/` — served by `dashboard.py` (stdlib only, no
 dependencies), systemd unit `mesh-dashboard`.
 
-- **Status cards** — MC/MT connection, forwarded message counters, queue
-  depth, maintenance stats
-- **Power switch** — starts/stops the `mesh-bridge` service via
-  `sudo systemctl --no-block` (works with NOPASSWD sudo or the optional
-  sudoers rule)
-- **Channel mapping editor** — bijective MC↔MT pairs, validated both ways;
-  the bridge picks changes up within ~15 s
-- **Event feed** — receive / forward / filtered / queued / flushed / connect /
-  disconnect / maintenance, with filters and 5 s auto-refresh; timestamps in
-  `YYYY-MM-DD HH:MM:SS`
-- **Channel credentials panel** — only if `channel_info.json` exists
+**Authentication**: the dashboard requires login (users live in `stats.db`,
+passwords are PBKDF2-hashed, sessions are 30-day `HttpOnly` cookies).
+On the very first start a default admin **`admin`/`admin`** is created —
+**change the password immediately** (Users page → *Change my password*;
+the UI shows a warning banner until then). Roles:
+
+- **admin** — everything: config editing, channel mapping, the bridge
+  power switch, user management (create/delete, last admin cannot be
+  deleted, you cannot delete yourself)
+- **user** — read-only viewer of the dashboard (status, feed, charts)
+
+Tabs: **Dashboard** (status cards, mapping editor, statistics, feed with
+search/paging), **Config** (admin), **Users** (admin). The feed, filters
+and charts are described above; the mapping editor stays on the
+dashboard tab.
 
 Runtime data files (all gitignored):
 
 | File | Content |
 |---|---|
-| `events.jsonl` | Rotating event log (last 150 records) |
-| `status.json` | Current state, updated every ~15 s |
-| `mappings.json` | Live channel mapping (dashboard writes, bridge reads) |
+| `stats.db` | SQLite: full message/event history, live configuration, users/sessions |
+| `events.jsonl` | Rotating event log (last 150 records, legacy/compact) |
+| `status.json` | Current state incl. config snapshot, updated every ~15 s |
 | `channels.json` | Discovered channel names (after both sides connect) |
 | `channel_info.json` | Optional credentials for the dashboard panel |
 
-> ⚠️ **Security**: the dashboard has **no authentication** and is reachable
-> by anyone on your LAN — including the bridge power switch. Expose it to a
-> trusted home network only (or add a reverse proxy with auth / firewall
-> rules if that bothers you).
+> ⚠️ **Security**: the dashboard is reachable by anyone on your LAN
+> (login protects the data, but don't expose it to untrusted networks).
+> Config values include the MeshCore channel key — visible to admins
+> only, but `stats.db`/`status.json` on the Pi are plain files: protect
+> the host. The API blocks cross-origin POSTs (CSRF mitigation) and
+> delays failed logins by 1 s.
+
+## Delivery confirmation (MeshCore side)
+
+When the bridge forwards a message **to** MeshCore (MT→MC direction), it
+reports whether the message actually went out over the air:
+
+1. **Repeat echo (exact)** — MeshCore group messages are encrypted with
+   AES-128-ECB using the channel key, with no IV: the same plaintext
+   always produces the same ciphertext. The bridge knows the channel key
+   and the exact plaintext (timestamp + node name + text), so it computes
+   the ciphertext that will be on the air. The companion radio pushes
+   every raw received packet to the app (`PACKET_LOG_DATA` sniffer
+   frames); when any node re-transmits our message, the payload matches
+   **byte-for-byte** → event `mc_repeat` with the echo's SNR/RSSI and
+   delay. No foreign traffic is ever decrypted.
+2. **TX counter (best effort)** — if no echo arrives within
+   `mc_confirm_window` (default 30 s), packet statistics
+   (`CMD_GET_STATS`, firmware v8+) are compared before/after the send:
+   a growing `sent` counter means the radio transmitted (an occasional
+   advert can inflate it — treat as "air activity", not proof).
+   Event `mc_confirm` with `mc_tx: true/false/null`.
+
+Degradation: without `pycryptodome` (or without knowing the channel key)
+echo matching is skipped; on old firmware without stats the event reports
+`null`. An echo also requires our node to *hear* the repeater — no
+repeater in range means "tx-only", which is not a failure.
+
+Events appear on the dashboard with a green **repeater echo** badge
+(filter *Forwarded*).
+
+## Watchdog & health self-check
+
+`mesh-bridge.service` runs as `Type=notify` with `WatchdogSec=180`: the
+bridge sends `READY=1` on start and `WATCHDOG=1` at most every 60 s
+(implemented via raw `sd_notify` datagrams — no python dependency).
+If the event loop hangs, pings stop and systemd kills & restarts the
+service.
+
+The pings double as a **health self-check**: maintenance must complete
+within `maintenance_interval_hours + health_grace_minutes`. If it
+doesn't (e.g. some BLE call hangs in a way timeouts missed), the bridge
+logs `HEALTH: ...`, writes a `health` event (visible on the dashboard)
+and deliberately stops pinging — systemd restarts the whole process,
+which so far has fixed every stuck-BLE state.
+
+`status.json` carries `health_ok` and `last_maintenance` for other
+monitoring tools.
 
 ## Daily maintenance
 
@@ -276,6 +375,14 @@ Collected the hard way — read this before filing issues:
   sets time only when the drift exceeds 30 s.
 - **Channel names in MeshCore must be lowercase** (the app rejects
   uppercase).
+- **Watchdog needs `Type=notify`** — `WatchdogSec` only works for notify
+  services; the unit template and the `sd_notify` implementation in
+  `bridge.py` take care of this. Without systemd the bridge logs
+  normally, the watchdog ping is a no-op.
+- **Delivery confirmation silently degrades**: no `pycryptodome` → no
+  echo matching; old MeshCore firmware (no `CMD_GET_STATS`) → no TX
+  counter; the `PACKET_LOG_DATA` sniffer requires companion firmware
+  that implements `logRxRaw` (recent versions do).
 
 Useful commands:
 
@@ -292,7 +399,8 @@ bluetoothctl info <MAC>                 # pairing state check
 |---|---|
 | `bridge.py` | Main bridge: Meshtastic side, forwarding, queues, maintenance |
 | `meshcore_ble.py` | MeshCore companion protocol over BLE (bleak) |
-| `dashboard.py` | Web UI (stdlib http server, port 8420) |
+| `config_schema.py` | Shared config schema (bridge + dashboard) |
+| `dashboard.py` | Web UI: login, feed/search/paging, charts, Config, users |
 | `config.ini.example` | Configuration template — copy to `config.ini` |
 | `pair_bt.py` | Non-interactive BlueZ pairing with fixed PINs |
 | `create_channel.py` | One-off shared-channel setup on both devices |
@@ -318,22 +426,31 @@ on the radios), with a web dashboard, offline queues and device maintenance.
 
 ## Roadmap / TODO
 
-Ideas for future versions — some inspired by the projects above:
+Ideas for future versions — some inspired by the projects above
+(the first five have since been implemented, see *Delivery confirmation*,
+*Watchdog hardening*, the i18n dashboard, *Persistent statistics* and the
+auth + Config page above):
 
+- [x] **Delivery confirmation** — track MeshCore repeater echoes to
+      report whether a forwarded message actually went out over the air
+      (à la hoplink; see above for how)
+- [x] **Watchdog hardening** — systemd `WatchdogSec` + health self-check
+      (maintenance overdue ⇒ restart)
+- [x] **i18n** — English/CS dashboard with a flag toggle (default EN,
+      cookie-stored)
+- [x] **Persistent statistics** — SQLite-backed message/event history
+      (searchable, paginated feed) and daily charts: forwarded messages,
+      reconnects, uptime per side
 - [ ] **MQTT side** — bridge to/from an MQTT broker (MeshCore observer
       format), so the bridge can feed home-automation and web clients
       (à la AMMB)
 - [ ] **REST API** with health/metrics/status endpoints and token auth
       (à la AMMB) for remote monitoring
-- [ ] **Delivery confirmation** — track MeshCore repeater/observer echoes to
-      report whether a forwarded message actually went out over the air
-      (à la hoplink)
 - [ ] **Rate limiting** — configurable per-window caps to prevent channel
       flooding
-- [ ] **Dashboard authentication** — optional token/basic-auth (+ HTTPS
-      behind a reverse proxy) so the power switch is not LAN-public
-- [ ] **Persistent statistics** — SQLite-backed counters and history charts
-      (messages/day, uptime, reconnects)
+- [x] **Dashboard authentication** — login/logout with PBKDF2-hashed
+      users, 30-day sessions, admin (config/mapping/power/users) vs
+      read-only viewers; config itself moved to SQLite with a Config page
 - [ ] **Notifications** — alert on prolonged disconnects (e-mail / Telegram /
       gotify / MQTT)
 - [ ] **DM bridging (opt-in)** — relay direct messages to a configured
@@ -343,9 +460,6 @@ Ideas for future versions — some inspired by the projects above:
 - [ ] **Discord/Matrix gateway** (à la hoplink)
 - [ ] **Multi-radio support** — more than one node per side
 - [ ] **Packaging** — Docker image / PyPI package for non-Pi hosts
-- [ ] **i18n** — English/CS dashboard (currently Czech)
-- [ ] **Watchdog hardening** — systemd `WatchdogSec` + health self-check
-      (e.g. fail if maintenance has not completed in X hours)
 
 ## License
 

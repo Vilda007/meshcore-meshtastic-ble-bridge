@@ -50,6 +50,10 @@ log_file =
 # Dashboard: event log (JSONL) and status file (relative to this config)
 event_log = events.jsonl
 status_file = status.json
+# Repeat-echo window for MeshCore delivery confirmation (seconds; 0 = off)
+mc_confirm_window = 30
+# SQLite persistence of messages and events (dashboard feed + statistics)
+db_file = stats.db
 
 [maintenance]
 # Prune MeshCore contacts inactive longer than this (favorites never removed)
@@ -60,5 +64,9 @@ mt_node_max_age_days = 7
 maintenance_interval_hours = 24
 # Safety limit of removals per run
 max_removals_per_run = 10
+# Health self-check: maintenance must complete within interval + grace
+# (minutes); otherwise the bridge stops pinging the systemd watchdog
+# and lets systemd restart it
+health_grace_minutes = 90
 # true = only log what would be removed
 dry_run = false

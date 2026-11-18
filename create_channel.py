@@ -25,7 +25,6 @@ Usage: create_channel.py [phase] [config.ini]
 
 import asyncio
 import base64
-import configparser
 import json
 import logging
 import os
@@ -40,36 +39,26 @@ from meshtastic.ble_interface import BLEInterface
 from meshtastic.protobuf import channel_pb2
 
 
-def read_channel_cfg(cfg_path):
-    """(mc_name, mc_key, mt_name, mt_psk) from [channels] in config.ini."""
-    ini = configparser.ConfigParser()
-    if os.path.exists(cfg_path):
-        ini.read(cfg_path, encoding="utf-8")
-    ch = ini["channels"] if ini.has_section("channels") else {}
-
-    mc_name = ch.get("mc_channel_name", "#meshbridge").strip()
-    key_hex = ch.get("mc_channel_key", "").strip().replace(" ", "")
+def channel_cfg(cfg):
+    """(mc_name, mc_key, mt_name, mt_psk) z cfg (config.ini + SQLite overlay)."""
+    key_hex = (cfg.mc_channel_key or "").replace(" ", "")
     if not key_hex:
         raise SystemExit(
-            "config.ini [channels]: mc_channel_key is required "
-            "(16-byte hex string -- the MeshCore channel key; generate one, "
-            "e.g. `python3 -c \"import os;print(os.urandom(16).hex())\"`)")
+            "mc_channel_key is required (config.ini [channels] or the "
+            "dashboard Config page). Generate one, e.g.: "
+            '`python3 -c "import os; print(os.urandom(16).hex())"`')
     try:
         mc_key = bytes.fromhex(key_hex)
     except ValueError:
-        raise SystemExit("config.ini [channels]: mc_channel_key is not hex")
+        raise SystemExit("mc_channel_key is not a hex string")
     if len(mc_key) != 16:
-        raise SystemExit("config.ini [channels]: mc_channel_key must be "
-                          "16 bytes (32 hex chars)")
-
-    mt_name = ch.get("mt_channel_name", mc_name).strip()
-    psk_b64 = ch.get("mt_channel_psk", "AQ==").strip()
+        raise SystemExit("mc_channel_key must be 16 bytes (32 hex chars)")
     try:
-        mt_psk = base64.b64decode(psk_b64)
+        mt_psk = base64.b64decode(cfg.mt_channel_psk or "AQ==")
     except Exception:
-        raise SystemExit("config.ini [channels]: mt_channel_psk must be "
-                          "base64 (default \"AQ==\" = public key)")
-    return mc_name, mc_key, mt_name, mt_psk
+        raise SystemExit('mt_channel_psk must be base64 '
+                         '(default "AQ==" = the public-by-convention key)')
+    return cfg.mc_channel_name, mc_key, cfg.mt_channel_name, mt_psk
 
 
 def _bluez_disconnect(needle):
@@ -224,7 +213,7 @@ def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Config(cfg_path)
-    mc_name, mc_key, mt_name, mt_psk = read_channel_cfg(cfg_path)
+    mc_name, mc_key, mt_name, mt_psk = channel_cfg(cfg)
     print("NOTE: the mesh-bridge service must be stopped "
           "(sudo systemctl stop mesh-bridge).")
 

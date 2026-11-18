@@ -29,13 +29,16 @@ import logging
 import logging.handlers
 import os
 import signal
+import socket
+import sqlite3
 import sys
 import time
 from collections import OrderedDict
 
 from pubsub import pub
 
-from meshcore_ble import MeshCoreClient
+from config_schema import CONFIG_ATTR, CONFIG_SCHEMA, parse_value
+from meshcore_ble import MeshCoreClient, PAYLOAD_TYPE_GRP_TXT
 
 try:
     from meshtastic.ble_interface import BLEInterface
@@ -43,6 +46,28 @@ except ImportError:  # nezname BLE zarizeni az v runtime, ale knihovna chyti hne
     BLEInterface = None
 
 log = logging.getLogger("bridge")
+
+
+def sd_notify(msg):
+    """systemd sd_notify (READY/WATCHDOG) bez externi knihovny.
+
+    Zachycuje NOTIFY_SOCKET (abstraktni socket znamena '@' -> \\0); kdyz
+    bridge bezne mimo systemd, neni co delat -- tise.
+    """
+    addr = os.getenv("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            s.connect(addr)
+            s.sendall(msg.encode())
+        finally:
+            s.close()
+    except OSError:
+        pass
 
 # Meshtastic BLE volani (sendText, setTime, close, BLEInterface(...)) nemaji
 # vlastni timeouty a po tichem umrti GATT spojeni (callback connection.lost
@@ -90,10 +115,38 @@ class Config:
         # dashboard: JSONL event log + status soubor (relativni = vedle configu)
         self.event_log = br.get("event_log", "events.jsonl")
         self.status_file = br.get("status_file", "status.json")
+        # SQLite perzistence: zpravy + udalosti (statistiky, feed dashboardu)
+        self.db_file = br.get("db_file", "stats.db")
         # dashboard: runtime-editovatelne mapovani kanalu + cache jmen kanalu
         self.mappings_file = br.get("mappings_file", "mappings.json")
         self.channels_file = br.get("channels_file", "channels.json")
         self.base_dir = os.path.dirname(os.path.abspath(path))
+        # repeat-echo okno pro potvrzeni doruceni na MC strane (s; 0 = vyp)
+        self.mc_confirm_window = br.getint("mc_confirm_window", 30)
+        # sdileny kanal (create_channel.py); klic je TAJNY
+        chs = ini["channels"] if ini.has_section("channels") else {}
+        self.mc_channel_name = chs.get("mc_channel_name",
+                                       "#meshbridge").strip()
+        self.mc_channel_key = chs.get("mc_channel_key", "").strip()
+        self.mt_channel_name = chs.get("mt_channel_name",
+                                       self.mc_channel_name).strip()
+        self.mt_channel_psk = chs.get("mt_channel_psk", "AQ==").strip()
+
+        # prekryti z SQLite (tabulka 'config' ve stats.db; ridi ji dashboard
+        # Config stranka) -- ini zustava bootstrapem a zdrojem defaultu
+        db_path = self.db_file
+        if db_path and not os.path.isabs(db_path):
+            db_path = os.path.join(self.base_dir, db_path)
+        overlay = {}
+        if db_path:
+            try:
+                conn = sqlite3.connect(db_path)
+                overlay = {r[0]: r[1] for r in
+                           conn.execute("SELECT key, value FROM config")}
+                conn.close()
+            except sqlite3.Error:
+                overlay = {}
+        self._apply_overlay(overlay)
 
         # mapovani kanalu MC -> MT: [channels] mappings = "mc:mt, mc:mt".
         # Neni-li sekce, pouzije se klasicka dvojice meshcore.channel a
@@ -117,9 +170,34 @@ class Config:
         self.max_removals_per_run = (
             ini["maintenance"].getint("max_removals_per_run", 10)
             if ini.has_section("maintenance") else 10)
+        # health self-check: udruzba musi dobehnout do interval+grace
+        self.health_grace_minutes = (
+            ini["maintenance"].getint("health_grace_minutes", 90)
+            if ini.has_section("maintenance") else 90)
         self.dry_run = (
             ini["maintenance"].getboolean("dry_run", False)
             if ini.has_section("maintenance") else False)
+
+    def _apply_overlay(self, values):
+        """Prekryje konfiguraci hodnotami z DB (klice dle schematu).
+
+        Neplatne hodnoty jen zaloguje a preskoci. Vrati list zmenenych klicu.
+        """
+        changed = []
+        for key, raw in values.items():
+            spec = CONFIG_SCHEMA.get(key)
+            attr = CONFIG_ATTR.get(key)
+            if not (spec and attr and raw is not None):
+                continue
+            val, err = parse_value(key, raw)
+            if err or val is None:
+                log.warning("Config: %s ma neplatnou hodnotu %r (%s)",
+                            key, raw, err)
+                continue
+            if getattr(self, attr, None) != val:
+                setattr(self, attr, val)
+                changed.append(key)
+        return changed
 
     @staticmethod
     def parse_mappings(raw):
@@ -190,6 +268,45 @@ class EventLog:
             pass
 
 
+class BridgeDB:
+    """SQLite perzistence: jednotny feed udalosti a zprav pro dashboard.
+
+    Jedina tabulka 'log'; radky jsou vsechno, co projde _elog() (prijem,
+    preposlani, fronty, connect/disconnect, udrzba...). Statistiky
+    (zpravy/den, reconnecty, uptime) dashboard pocita SQL agregacemi.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS log ("
+            " ts REAL NOT NULL, kind TEXT NOT NULL, direction TEXT,"
+            " src TEXT, text TEXT, extra TEXT)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts)")
+        self.conn.commit()
+
+    def log(self, kind, direction=None, src=None, text=None, extra=None):
+        """Vlozi radek (extra = dict -> JSON; chyby jen logne)."""
+        try:
+            self.conn.execute(
+                "INSERT INTO log (ts, kind, direction, src, text, extra)"
+                " VALUES (?,?,?,?,?,?)",
+                (time.time(), kind, direction, src, text,
+                 json.dumps(extra, ensure_ascii=False) if extra else None))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            log.debug("sqlite write failed: %r", e)
+
+    def close(self):
+        try:
+            self.conn.close()
+        except sqlite3.Error:
+            pass
+
+
 # --------------------------------------------------------------------- bridge
 
 class Bridge:
@@ -202,24 +319,51 @@ class Bridge:
         if ev_path and not os.path.isabs(ev_path):
             ev_path = os.path.join(cfg.base_dir, ev_path)
         self.events = EventLog(ev_path) if ev_path else None
+        # SQLite perzistence (feed + statistiky); selhani neni fatalni
+        db_path = cfg.db_file
+        if db_path and not os.path.isabs(db_path):
+            db_path = os.path.join(cfg.base_dir, db_path)
+        self.db = None
+        if db_path:
+            try:
+                self.db = BridgeDB(db_path)
+                self.db.log("bridge_start")
+            except sqlite3.Error as e:
+                log.warning("SQLite %s nelze otevrit: %r", db_path, e)
         st_path = cfg.status_file
         if st_path and not os.path.isabs(st_path):
             st_path = os.path.join(cfg.base_dir, st_path)
         self.status_path = st_path
         self._last_mc_state = None
 
-        # mapovani kanalu: vychozi z configu; mappings.json (rizene
-        # dashboardem) ma prednost a nacita se i za behu (watch mtime)
+        # mapovani kanalu: vychozi z configu; z DB ('channels.mappings',
+        # ridi dashboard) ma prednost; legacy mappings.json se jednorazove
+        # premigruje. Zmeny hlida flush smycka (do 15 s).
         self.mappings = list(cfg.mappings)
         self.mappings_path = os.path.join(cfg.base_dir, cfg.mappings_file)
-        self._mappings_mtime = -1.0
-        self._load_mappings_file()
         self.channels_path = os.path.join(cfg.base_dir, cfg.channels_file)
         self._channels_done = False  # po pripojeni stran zjistime jmena kanalu
+        self._config_updated = -1.0
+        rows, mappings, updated = self._db_config()
+        if mappings is None:
+            mappings = self._migrate_mappings_json()
+        if mappings is not None:
+            self.mappings = mappings
+        if updated is not None:
+            self._config_updated = updated
 
         self.mc = None            # MeshCoreClient
         self.mt = None            # meshtastic BLEInterface
-        self.my_id = None         # "!xxxxxxxx" naseho T-Beamu
+        self.my_id = None         # "!xxxxxxxx" naseho MT uzlu
+
+        # systemd watchdog + health self-check
+        self._watchdog_healthy = True
+        self._last_maintenance_ok = time.time()
+
+        # potvrzeni doruceni na MC strane: ciphertext nasi zpravy ->
+        # {deadline, ts, sent_at, text, pre}; exspirace proleze flush loopa
+        self._mc_secrets = {}       # mc kanal -> 16bajtovy klic (cache)
+        self._mc_cts = OrderedDict()
 
         self.mt_lost = asyncio.Event()
         self.mt_send_lock = asyncio.Lock()
@@ -229,7 +373,7 @@ class Bridge:
         self.stats = {"mc_to_mt": 0, "mt_to_mc": 0,
                       "mc_contacts_removed": 0, "mt_nodes_removed": 0,
                       "mc_dropped": 0, "mt_dropped": 0,
-                      "queued": 0, "flushed": 0}
+                      "queued": 0, "flushed": 0, "mc_repeated": 0}
 
     # -------------------------------------------------------------- hlavni beh
 
@@ -246,7 +390,8 @@ class Bridge:
             self._on_mc_message,
             name_filter=self.cfg.mc_device,
             poll_interval=self.cfg.mc_poll_interval,
-            app_name="mesh-bridge")
+            app_name="mesh-bridge",
+            on_raw_rx=self._on_mc_raw_rx)
 
         async def mc_start():
             # pockat, az se pripoji Meshtastic (BLE skeny obou klientu
@@ -263,7 +408,9 @@ class Bridge:
             asyncio.create_task(self._maintenance_loop(), name="maintenance"),
             asyncio.create_task(self._pending_flush_loop(), name="pending"),
             asyncio.create_task(self._status_loop(), name="status"),
+            asyncio.create_task(self._watchdog_loop(), name="watchdog"),
         ]
+        sd_notify("READY=1")   # systemd: unita Type=notify je "started"
         try:
             await asyncio.gather(*tasks)
         finally:
@@ -280,6 +427,9 @@ class Bridge:
                     self.loop.run_in_executor(None, self.mt.close), 10)
             except Exception:
                 pass
+        if self.db:
+            self.db.log("bridge_stop")   # hranice uptime v statistikach
+            self.db.close()
         log.info("Bridge zastaven (MC->MT %d, MT->MC %d)",
                  self.stats["mc_to_mt"], self.stats["mt_to_mc"])
 
@@ -453,13 +603,17 @@ class Bridge:
             log.info("MT->MC: %r (od %s)", text, from_id)
             await self._elog("recv", side="mt", src=from_id, text=text[:200])
             body_limit = self.cfg.mc_max_len - len(self.cfg.prefix_to_mc) - 1
+            secret = await self._mc_secret(mc_ch)
+            node_name = (self.mc.info or {}).get("name")
             for chunk in self._chunks(text, body_limit):
                 msg = f"{self.cfg.prefix_to_mc} {chunk}"
-                ok = await self.mc.send_channel_message(mc_ch, msg)
-                if ok:
+                res = await self.mc.send_channel_message_confirm(
+                    mc_ch, msg, channel_secret=secret, node_name=node_name)
+                if res["ok"]:
                     self.stats["mt_to_mc"] += 1
                     await self._elog("forward", direction="mt_to_mc",
                                      text=msg[:200])
+                    await self._mc_track_delivery(msg, res)
                 else:
                     self._enqueue(self.mc_pending, msg, "MC")
                     log.warning("MT->MC: odeslani selhalo, ve fronte: %r",
@@ -518,7 +672,8 @@ class Bridge:
         while self._running:
             await asyncio.sleep(15)
             try:
-                self._check_mappings()
+                self._check_config()
+                await self._mc_confirm_sweep()
                 mc_now = bool(self.mc and self.mc.connected)
                 mt_now = bool(self.mt)
                 if not (mc_now and mt_now):
@@ -571,6 +726,12 @@ class Bridge:
                 "stats": self.stats,
                 "queue_mc": len(self.mc_pending),
                 "queue_mt": len(self.mt_pending),
+                "health_ok": self._watchdog_healthy,
+                "last_maintenance": int(self._last_maintenance_ok),
+                # konfigurace pro dashboard Config stranku (vc. kanalu =
+                # atributu schematu; secret hodnoty vid jen admin pres API)
+                "config": {key: getattr(self.cfg, attr, None)
+                           for key, attr in CONFIG_ATTR.items()},
             }
             tmp = self.status_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -580,6 +741,80 @@ class Bridge:
             log.debug("status write failed: %r", e)
 
     # --------------------------------------------------------------- meshcore
+
+    async def _mc_secret(self, mc_idx):
+        """16bajtovy klic MC kanalu (cache; None = neznamy/prazdny slot)."""
+        if mc_idx not in self._mc_secrets:
+            ch = None
+            if self.mc and self.mc.connected:
+                try:
+                    ch = await asyncio.wait_for(self.mc.get_channel(mc_idx),
+                                                15)
+                except asyncio.TimeoutError:
+                    pass
+            self._mc_secrets[mc_idx] = (bytes.fromhex(ch["secret"])
+                                        if ch and ch.get("secret") else None)
+        return self._mc_secrets[mc_idx]
+
+    async def _mc_track_delivery(self, msg, res):
+        """Zaeviduje cekani na repeat-echo nasi zpravy (MC strana).
+
+        Ocekavany ciphertext je deterministicky (AES-128-ECB bez IV), takze
+        echo od repeateru lze spoznat v raw RX snifferu bajtove presne.
+        """
+        if not (res.get("ct") and self.cfg.mc_confirm_window > 0):
+            return
+        self._mc_cts[res["ct"].hex()] = {
+            "deadline": time.monotonic() + self.cfg.mc_confirm_window,
+            "sent_at": time.monotonic(), "ts": res["ts"],
+            "text": msg[:80], "pre": res.get("pre")}
+
+    async def _on_mc_raw_rx(self, pkt):
+        """Sniffer vsech prijatych raw packetu -> repeat-echo nasi zpravy.
+
+        GRP_TXT payload: [channel_hash (1)][MAC (2)][ciphertext]. Nas
+        ciphertext zname -- porovnani je exaktni, cizi provoz neresifrujeme.
+        """
+        try:
+            if pkt["payload_type"] != PAYLOAD_TYPE_GRP_TXT:
+                return
+            tail = bytes(pkt["payload"][3:])
+            if not tail:
+                return
+            rec = self._mc_cts.pop(tail.hex(), None)
+            if not rec:
+                return
+            delay = time.monotonic() - rec["sent_at"]
+            self.stats["mc_repeated"] += 1
+            log.info("MC: repeat-echo nasi zpravy po %.1f s "
+                     "(SNR %.1f dB, RSSI %d dBm): %r", delay,
+                     pkt["snr"], pkt["rssi"], rec["text"])
+            await self._elog("mc_repeat", snr=pkt["snr"], rssi=pkt["rssi"],
+                             delay_s=round(delay, 1), text=rec["text"])
+        except Exception:
+            log.exception("MC: chyba pri zpracovani repeat-echo")
+
+    async def _mc_confirm_sweep(self):
+        """Expirovana cekani na echo: vypocet TX-statistikou potvrzeni."""
+        now = time.monotonic()
+        for ct_hex in [k for k, r in self._mc_cts.items()
+                       if now >= r["deadline"]]:
+            rec = self._mc_cts.pop(ct_hex)
+            mc_tx = None
+            if self.mc and self.mc.connected and rec.get("pre"):
+                try:
+                    post = await asyncio.wait_for(self.mc.get_packet_stats(),
+                                                  10)
+                except asyncio.TimeoutError:
+                    post = None
+                if post:
+                    # citac 'sent' roste jen skutecnym vysilanim; jine
+                    # flood pakety (adverty) ho ale take posouvaji
+                    mc_tx = post.get("sent", 0) > rec["pre"].get("sent", 0)
+            log.info("MC: zadne repeat-echo do %d s (tx=%s): %r",
+                     self.cfg.mc_confirm_window, mc_tx, rec["text"])
+            await self._elog("mc_confirm", mc_tx=mc_tx,
+                             text=rec["text"])
 
     async def _on_mc_message(self, text, channel_idx, ts):
         try:
@@ -619,6 +854,14 @@ class Bridge:
                 await self.events.log(event, **kw)
             except Exception:
                 pass
+        if self.db:
+            # mirror do SQLite: direction/side do jednoho sloupce, zbytek
+            # (snr, mc_tx, pocty udrzby...) jako JSON extra
+            side = kw.get("direction") or kw.get("side")
+            extra = {k: v for k, v in kw.items()
+                     if k not in ("direction", "side", "src", "text")}
+            self.db.log(event, direction=side, src=kw.get("src"),
+                        text=kw.get("text"), extra=extra or None)
 
     # ------------------------------------------------------------------ udrzba
 
@@ -646,6 +889,7 @@ class Bridge:
         await self._elog("maintenance", mc_clock_drift=mc_drift,
                          mc_contacts_removed=mc_removed,
                          mt_nodes_removed=mt_removed)
+        self._last_maintenance_ok = time.time()   # health self-check
         self.write_status()
         log.info("UDRZBA: konec")
 
@@ -774,33 +1018,91 @@ class Bridge:
                 return mc
         return None
 
-    def _load_mappings_file(self):
-        """Nacte mapovani z mappings.json (jeho zmenou ho ridi dashboard)."""
+    def _db_config(self):
+        """(rows, mappings, updated) ze stats.db; prazdne, kdyz DB nema tabulku.
+
+        rows = {'klic': 'hodnota'} (vsechny klice vratne jako str),
+        mappings = naparsovane [[mc,mt]] / None (klic chybi),
+        updated = timestamp 'config.updated' (None = chyba cteni).
+        """
+        if not self.db:
+            return {}, None, None
+        try:
+            rows = {r[0]: r[1] for r in
+                    self.db.conn.execute("SELECT key, value FROM config")}
+        except sqlite3.Error:
+            return {}, None, None
+        mappings = None
+        if rows.get("channels.mappings"):
+            try:
+                mappings = [(int(a), int(b))
+                             for a, b in json.loads(rows["channels.mappings"])]
+            except (ValueError, TypeError, json.JSONDecodeError):
+                log.warning("Config: neplatne channels.mappings v DB: %r",
+                            rows["channels.mappings"])
+                mappings = None
+        try:
+            updated = float(rows.get("config.updated") or 0)
+        except (TypeError, ValueError):
+            updated = None
+        return rows, mappings, updated
+
+    def _db_set_config(self, key, value):
+        """Zapise klic do DB config a zvedne config.updated (trigger reloadu)."""
+        if not self.db:
+            return
+        try:
+            self.db.conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                (key, str(value)))
+            self.db.conn.execute(
+                "INSERT OR REPLACE INTO config (key, value)"
+                " VALUES ('config.updated', ?)", (str(time.time()),))
+            self.db.conn.commit()
+        except sqlite3.Error as e:
+            log.warning("Config: zapis do DB selhal: %r", e)
+
+    def _migrate_mappings_json(self):
+        """Jednorazovy import legacy mappings.json do SQLite; [pary]/None."""
         try:
             with open(self.mappings_path, encoding="utf-8") as f:
-                data = json.load(f)
-            pairs = [(int(mc), int(mt)) for mc, mt in data.get("mappings", [])]
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
-            log.debug("mappings.json: nelze nacist (%r)", e)
-            return
-        if pairs != self.mappings:
-            log.info("Mapovani kanalu: %s",
-                     ", ".join(f"MC{mc}->MT{mt}" for mc, mt in pairs) or "zadne")
-        self.mappings = pairs
-        try:
-            self._mappings_mtime = os.path.getmtime(self.mappings_path)
-        except OSError:
-            pass
+                pairs = json.load(f).get("mappings")
+            pairs = [(int(a), int(b)) for a, b in pairs or []]
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if pairs:
+            log.info("Config: migrace mappings.json -> SQLite: %s",
+                     ", ".join(f"MC{a}<->MT{b}" for a, b in pairs))
+            self._db_set_config("channels.mappings", json.dumps(pairs))
+        return pairs
 
-    def _check_mappings(self):
-        """Reloadne mappings.json, kdyz ho dashboard prepise (watch mtime)."""
-        try:
-            mtime = os.path.getmtime(self.mappings_path)
-        except OSError:
+    def _check_config(self):
+        """Reload konfigurace/mapovani z DB, kdyz je dashboard prepsal.
+
+        Volano z flush smycky (do 15 s od ulozeni na Config strance).
+        """
+        rows, mappings, updated = self._db_config()
+        if updated is None or updated == self._config_updated:
             return
-        if mtime != self._mappings_mtime:
-            self._load_mappings_file()
-            self.write_status()
+        self._config_updated = updated
+        changed = self.cfg._apply_overlay(rows)
+        # hned aplikovatelne vedlejsi efekty
+        if "bridge.log_level" in changed:
+            logging.getLogger().setLevel(self.cfg.log_level)
+        if "meshcore.poll_interval" in changed and self.mc:
+            self.mc.poll_interval = self.cfg.mc_poll_interval
+        if mappings is not None and mappings != self.mappings:
+            self.mappings = mappings
+            log.info("Mapovani kanalu: %s",
+                     ", ".join(f"MC{a}<->MT{b}" for a, b in mappings)
+                     or "(zadne -- nic se nepreposila)")
+        if changed:
+            log.info("Config reload: %s", ", ".join(changed))
+            restart = [k for k in changed if CONFIG_SCHEMA[k].get("restart")]
+            if restart:
+                log.warning("Config: az po restartu sluzby se projevi: %s",
+                            ", ".join(restart))
+        self.write_status()
 
     def _mt_channels_sync(self):
         """Jmena kanalu z localNode.channels (blokuje; volat v executoru).
@@ -873,12 +1175,43 @@ class Bridge:
         n = len(parts)
         return [f"[{i + 1}/{n}] {p}" for i, p in enumerate(parts)]
 
+    async def _watchdog_loop(self):
+        """Ping systemd watchdogu + health self-check.
+
+        WATCHDOG_USEC nastavi systemd (unita Type=notify + WatchdogSec).
+        Prestaneme-li pingovat, systemd bridge zabije a diky Restart=always
+        ho odstartuje znovu. Health kriterium: denni udruzba musi dobehnout
+        do maintenance_interval + grace; pokud ne, bridge je "unhealthy".
+        """
+        usec = os.getenv("WATCHDOG_USEC")
+        interval = min(int(usec) / 2e6, 60.0) if usec else 60.0
+        limit = (self.cfg.maintenance_interval_hours * 3600
+                 + self.cfg.health_grace_minutes * 60)
+        while self._running:
+            await asyncio.sleep(interval)
+            overdue = time.time() - self._last_maintenance_ok - limit
+            if overdue > 0 and self._watchdog_healthy:
+                self._watchdog_healthy = False
+                log.critical("HEALTH: udruzba nedobehla o %.0f min pres "
+                             "limit (%d h + %d min) -- prestavam pingovat "
+                             "watchdog, systemd restartuje bridge",
+                             overdue / 60, self.cfg.maintenance_interval_hours,
+                             self.cfg.health_grace_minutes)
+                await self._elog("health", ok=False,
+                                 reason="maintenance overdue",
+                                 overdue_min=int(overdue / 60))
+                self.write_status()
+                continue
+            if self._watchdog_healthy:
+                sd_notify("WATCHDOG=1")
+
     async def _status_loop(self):
         while self._running:
             await asyncio.sleep(600)
             log.info("STAV: MC=%s MT=%s | prelozeno MC->MT=%d MT->MC=%d, "
                      "filtrovano=%d, dedup=%d | fronty: MC=%d MT=%d | "
-                     "udrzba: MC kontakty -%d, MT uzly -%d",
+                     "udrzba: MC kontakty -%d, MT uzly -%d (posledni OK "
+                     "pred %.1f h), repeat-echa=%d | health=%s",
                      "OK" if (self.mc and self.mc.connected) else "NEPRIPOJENO",
                      "OK" if self.mt else "NEPRIPOJENO",
                      self.stats["mc_to_mt"], self.stats["mt_to_mc"],
@@ -886,7 +1219,10 @@ class Bridge:
                      len(self.seen),
                      len(self.mc_pending), len(self.mt_pending),
                      self.stats["mc_contacts_removed"],
-                     self.stats["mt_nodes_removed"])
+                     self.stats["mt_nodes_removed"],
+                     (time.time() - self._last_maintenance_ok) / 3600,
+                     self.stats["mc_repeated"],
+                     "OK" if self._watchdog_healthy else "SELHAL")
 
 
 # ------------------------------------------------------------------------ main

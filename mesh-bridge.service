@@ -6,7 +6,11 @@ StartLimitIntervalSec=300
 StartLimitBurst=10
 
 [Service]
-Type=simple
+# Type=notify + WatchdogSec: bridge posila READY a pravidelne WATCHDOG=1;
+# prestane-li (zaseknuty event loop ci health self-check), systemd ho
+# restartuje. Vice v README (Watchdog hardening).
+Type=notify
+WatchdogSec=180
 # __BRIDGE_USER__/__BRIDGE_HOME__ are filled in by install.sh (current user)
 User=__BRIDGE_USER__
 Group=__BRIDGE_USER__

@@ -10,8 +10,9 @@ set -e
 PI="${PI:-raspberrypi.local}"
 DEST="${DEST:-/home/pi/mesh-bridge}"   # adjust to your user on the Pi
 
-FILES="bridge.py meshcore_ble.py pair_bt.py dashboard.py create_channel.py
-       config.ini config.ini.example channel_info.json.example install.sh
+FILES="bridge.py meshcore_ble.py config_schema.py pair_bt.py dashboard.py
+       create_channel.py config.ini config.ini.example
+       channel_info.json.example install.sh
        mesh-bridge.service mesh-dashboard.service sudoers.d-mesh-bridge
        README.md LICENSE .gitignore
        setup_tbeam.py test_meshcore.py mt_serial_listen.py"
