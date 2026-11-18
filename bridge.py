@@ -45,6 +45,11 @@ try:
 except ImportError:  # nezname BLE zarizeni az v runtime, ale knihovna chyti hned
     BLEInterface = None
 
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:  # MQTT strana je volitelna
+    mqtt = None
+
 log = logging.getLogger("bridge")
 
 
@@ -109,6 +114,9 @@ class Config:
         # limit tela zpravy (bez prefixu); MeshCore ~133 znaku, MT ~233
         self.mc_max_len = br.getint("mc_max_len", 120)
         self.mt_max_len = br.getint("mt_max_len", 200)
+        # rate limit: min. sekund mezi dvema preposlanymi zpravami (0 = vyp)
+        self.rate_limit_mc_to_mt = br.getfloat("rate_limit_mc_to_mt", 0.0)
+        self.rate_limit_mt_to_mc = br.getfloat("rate_limit_mt_to_mc", 0.0)
         self.dedup_cache = br.getint("dedup_cache", 400)
         self.log_level = br.get("log_level", "INFO").upper()
         self.log_file = br.get("log_file", "")  # prazdne = jen konzola/journal
@@ -131,6 +139,18 @@ class Config:
         self.mt_channel_name = chs.get("mt_channel_name",
                                        self.mc_channel_name).strip()
         self.mt_channel_psk = chs.get("mt_channel_psk", "AQ==").strip()
+
+        # MQTT (home automation / web klienty; volitelna strana)
+        mq = ini["mqtt"] if ini.has_section("mqtt") else {}
+        self.mqtt_enabled = mq.getboolean("enabled", False)
+        self.mqtt_host = mq.get("host", "").strip()
+        self.mqtt_port = mq.getint("port", 1883)
+        self.mqtt_user = mq.get("user", "").strip()
+        self.mqtt_password = mq.get("password", "")
+        self.mqtt_topic_prefix = (mq.get("topic_prefix", "meshbridge")
+                                  .strip() or "meshbridge")
+        self.mqtt_allow_inbound = mq.getboolean("allow_inbound", False)
+        self.mqtt_hass_discovery = mq.getboolean("hass_discovery", True)
 
         # prekryti z SQLite (tabulka 'config' ve stats.db; ridi ji dashboard
         # Config stranka) -- ini zustava bootstrapem a zdrojem defaultu
@@ -307,6 +327,113 @@ class BridgeDB:
             pass
 
 
+class MqttSide:
+    """MQTT vystup/vstup pro home-automation a web klienty (paho-mqtt).
+
+    Temata pod topic_prefix (jednoduchy JSON, ne LetsMesh observer format):
+      <p>/mc/recv    {"ts","channel","text"}       kazda zprava z MeshCore
+      <p>/mt/recv    {"ts","channel","src","text"} kazda zprava z Meshtastic
+      <p>/status     {mc,mt spojeni, statistiky}    retained, co 60 s
+    Pri allow_inbound=True odbera <p>/send:
+      {"side": "mc"|"mt", "channel": <idx>, "text": "..."} -> do site.
+    Bez knihovny paho-mqtt / vypnuteho enabled je cela strana no-op.
+    """
+
+    def __init__(self, cfg, on_inbound):
+        self.cfg = cfg
+        self.on_inbound = on_inbound          # async fn(mqtt.MQTTMessage)
+        self.loop = None
+        self.client = None
+        self.connected = False
+
+    def start(self):
+        self.stop()
+        if not (mqtt and self.cfg.mqtt_enabled and self.cfg.mqtt_host):
+            if self.cfg.mqtt_enabled and not mqtt:
+                log.warning("MQTT: chybi knihovna paho-mqtt "
+                            "(pip install paho-mqtt) -- strana vypnuta")
+            return False
+        try:  # paho 2.x; fallback pro 1.x
+            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                            client_id="mesh-bridge")
+        except (AttributeError, TypeError):
+            c = mqtt.Client(client_id="mesh-bridge")
+        if self.cfg.mqtt_user:
+            c.username_pw_set(self.cfg.mqtt_user, self.cfg.mqtt_password or None)
+        c.on_connect = self._on_connect
+        c.on_disconnect = self._on_disconnect
+        c.on_message = self._on_message
+        c.reconnect_delay_set(1, 60)
+        try:
+            c.connect_async(self.cfg.mqtt_host, self.cfg.mqtt_port, 30)
+            c.loop_start()
+        except Exception as e:
+            log.warning("MQTT: pripojeni k %s:%d selhalo: %r",
+                        self.cfg.mqtt_host, self.cfg.mqtt_port, e)
+            return False
+        self.client = c
+        log.info("MQTT: pripojuji k %s:%d (prefix %r)",
+                 self.cfg.mqtt_host, self.cfg.mqtt_port,
+                 self.cfg.mqtt_topic_prefix)
+        return True
+
+    def stop(self):
+        c, self.client = self.client, None
+        self.connected = False
+        if c:
+            try:
+                c.disconnect()
+            except Exception:
+                pass
+            try:
+                c.loop_stop()
+            except Exception:
+                pass
+
+    def restart(self):
+        if self.cfg.mqtt_enabled:
+            self.start()
+
+    def publish(self, subtopic, payload, retain=False):
+        """Nejvyssi uroven pro Bridge._mqtt_pub (neblokuje, vlastni vlakno)."""
+        if self.client and self.connected:
+            try:
+                self.client.publish(
+                    f"{self.cfg.mqtt_topic_prefix}/{subtopic}",
+                    json.dumps(payload, ensure_ascii=False), retain=retain, qos=0)
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------- paho callbacky
+
+    @staticmethod
+    def _rc_ok(rc):
+        if isinstance(rc, int):          # paho 1.x
+            return rc == 0
+        return not getattr(rc, "is_failure", True)   # paho 2.x ReasonCode
+
+    def _on_connect(self, client, userdata, flags, rc, *rest):
+        if self._rc_ok(rc):
+            self.connected = True
+            log.info("MQTT: pripojeno")
+            if self.cfg.mqtt_allow_inbound:
+                client.subscribe(f"{self.cfg.mqtt_topic_prefix}/send")
+                log.info("MQTT: odber %s/send (inbound do site)",
+                         self.cfg.mqtt_topic_prefix)
+        else:
+            log.warning("MQTT: broker odmitl spojeni (rc=%s)", rc)
+
+    def _on_disconnect(self, *args):
+        was = self.connected
+        self.connected = False
+        if was:
+            log.warning("MQTT: spojeni ztraceno (paho zkusi reconnect)")
+
+    def _on_message(self, client, userdata, msg):
+        if self.on_inbound and self.loop:
+            asyncio.run_coroutine_threadsafe(self.on_inbound(msg), self.loop)
+
+
 # --------------------------------------------------------------------- bridge
 
 class Bridge:
@@ -364,6 +491,10 @@ class Bridge:
         # {deadline, ts, sent_at, text, pre}; exspirace proleze flush loopa
         self._mc_secrets = {}       # mc kanal -> 16bajtovy klic (cache)
         self._mc_cts = OrderedDict()
+        self._last_fwd_mt = 0.0     # rate limit (monotonic)
+        self._last_fwd_mc = 0.0
+
+        self.mqtt = None            # MqttSide (volitelna MQTT strana)
 
         self.mt_lost = asyncio.Event()
         self.mt_send_lock = asyncio.Lock()
@@ -393,6 +524,11 @@ class Bridge:
             app_name="mesh-bridge",
             on_raw_rx=self._on_mc_raw_rx)
 
+        # MQTT (volitelne; start je no-op, kdyz neni enabled/knihovna)
+        self.mqtt = MqttSide(self.cfg, self._on_mqtt_inbound)
+        self.mqtt.loop = asyncio.get_running_loop()
+        self.mqtt.start()
+
         async def mc_start():
             # pockat, az se pripoji Meshtastic (BLE skeny obou klientu
             # na jednom adapteru se navzajem rusi)
@@ -409,6 +545,7 @@ class Bridge:
             asyncio.create_task(self._pending_flush_loop(), name="pending"),
             asyncio.create_task(self._status_loop(), name="status"),
             asyncio.create_task(self._watchdog_loop(), name="watchdog"),
+            asyncio.create_task(self._mqtt_status_loop(), name="mqtt-status"),
         ]
         sd_notify("READY=1")   # systemd: unita Type=notify je "started"
         try:
@@ -427,6 +564,8 @@ class Bridge:
                     self.loop.run_in_executor(None, self.mt.close), 10)
             except Exception:
                 pass
+        if self.mqtt:
+            self.mqtt.stop()
         if self.db:
             self.db.log("bridge_stop")   # hranice uptime v statistikach
             self.db.close()
@@ -590,6 +729,10 @@ class Bridge:
                 await self._elog("dropped", side="mt", reason="loop-guard",
                                  text=text[:120])
                 return
+            # MQTT feed (home automation) -- vsechny kanaly, i nebridgovane
+            self._mqtt_pub("mt/recv", {
+                "ts": time.time(), "channel": packet.get("channel", 0),
+                "src": from_id, "text": text})
             pid = packet.get("id")
             key = (f"mt:{pid}" if pid
                    else "mt:" + hashlib.md5(
@@ -603,12 +746,9 @@ class Bridge:
             log.info("MT->MC: %r (od %s)", text, from_id)
             await self._elog("recv", side="mt", src=from_id, text=text[:200])
             body_limit = self.cfg.mc_max_len - len(self.cfg.prefix_to_mc) - 1
-            secret = await self._mc_secret(mc_ch)
-            node_name = (self.mc.info or {}).get("name")
             for chunk in self._chunks(text, body_limit):
                 msg = f"{self.cfg.prefix_to_mc} {chunk}"
-                res = await self.mc.send_channel_message_confirm(
-                    mc_ch, msg, channel_secret=secret, node_name=node_name)
+                res = await self._mc_send(msg, mc_ch)
                 if res["ok"]:
                     self.stats["mt_to_mc"] += 1
                     await self._elog("forward", direction="mt_to_mc",
@@ -626,6 +766,7 @@ class Bridge:
 
         Polozky fronty jsou dvojice (text, channel_idx).
         """
+        await self._throttle("mt")   # rate limit MC->MT (vc. flush fronty)
         async with self.mt_send_lock:
             iface = self.mt
             if iface is not None:
@@ -687,7 +828,8 @@ class Bridge:
                     await self._discover_channels()
                 while self.mc_pending and self.mc and self.mc.connected:
                     text, ch = self.mc_pending.pop(0)
-                    ok = await self.mc.send_channel_message(ch, text)
+                    res = await self._mc_send(text, ch)
+                    ok = res["ok"]
                     if ok:
                         self.stats["flushed"] += 1
                         await self._elog("flush", direction="mt_to_mc",
@@ -741,6 +883,143 @@ class Bridge:
             log.debug("status write failed: %r", e)
 
     # --------------------------------------------------------------- meshcore
+
+    async def _throttle(self, side):
+        """Rate limit: min. pocet sekund mezi dvema preposlanimi zpravami.
+
+        side = "mt" (MC->MT) / "mc" (MT->MC); limit 0 = vypnuto. Ceka pred
+        odeslanim, at priliv zprav nezaplavi LoRa kanal.
+        """
+        limit = (self.cfg.rate_limit_mc_to_mt if side == "mt"
+                 else self.cfg.rate_limit_mt_to_mc)
+        if limit <= 0:
+            return
+        last_attr = "_last_fwd_" + side
+        wait = getattr(self, last_attr, 0.0) + limit - time.monotonic()
+        if wait > 0:
+            log.info("RATE LIMIT (%s): cekam %.1f s pred odeslanim",
+                     side, wait)
+            await asyncio.sleep(wait)
+        setattr(self, last_attr, time.monotonic())
+
+    async def _mc_send(self, text, channel_idx):
+        """Odeslani na MC stranu s rate limitem (pouziva ho i flush fronty).
+
+        Vraci dict jako send_channel_message_confirm.
+        """
+        await self._throttle("mc")
+        secret = await self._mc_secret(channel_idx)
+        node_name = (self.mc.info or {}).get("name")
+        return await self.mc.send_channel_message_confirm(
+            channel_idx, text, channel_secret=secret, node_name=node_name)
+
+    def _mqtt_pub(self, subtopic, payload, retain=False):
+        """Neblokujici MQTT publish; bez MQTT strany je no-op."""
+        if self.mqtt:
+            self.mqtt.publish(subtopic, payload, retain=retain)
+
+    async def _on_mqtt_inbound(self, msg):
+        """<prefix>/send: {"side":"mc"|"mt","channel":int,"text":str} -> sit."""
+        try:
+            data = json.loads(msg.payload.decode("utf-8", "replace"))
+            side = str(data.get("side") or "").lower()
+            text = str(data.get("text") or "").strip()
+            channel = int(data.get("channel", 0))
+        except (ValueError, TypeError, AttributeError,
+                UnicodeDecodeError, json.JSONDecodeError):
+            log.warning("MQTT: neplatna zprava na %s: %r",
+                        msg.topic, msg.payload[:80])
+            return
+        if not text:
+            log.warning("MQTT: prazdny text na %s -- ignoruji", msg.topic)
+            return
+        log.info("MQTT->%s (kanal %d): %r", side.upper(), channel, text[:60])
+        await self._elog("mqtt", side=side, src="mqtt",
+                         text=text[:200])
+        if side == "mc" and self.mc and self.mc.connected:
+            res = await self._mc_send(text, channel)
+            if res["ok"]:
+                self.stats["mt_to_mc"] += 1
+                await self._elog("forward", direction="mt_to_mc",
+                                 text=text[:200])
+                await self._mc_track_delivery(text, res)
+        elif side == "mt" and self.mt:
+            ok = await self._mt_send(text, channel)
+            if ok:
+                self.stats["mc_to_mt"] += 1
+                await self._elog("forward", direction="mc_to_mt",
+                                 text=text[:200])
+        else:
+            log.warning("MQTT: neznama strana %r nebo strana nepripojena",
+                        side)
+
+    async def _mqtt_status_loop(self):
+        """Retained status na <prefix>/status co 60 s (home automation).
+
+        Pri zaplem hass_discovery publikuje i HA MQTT discovery (retained,
+        idempotentni) -- entity bridge se v Home Assistant objevi samy.
+        """
+        while self._running:
+            await asyncio.sleep(60)
+            if not (self.mqtt and self.mqtt.connected):
+                continue
+            status = {
+                "updated": int(time.time()),
+                "mc_connected": bool(self.mc and self.mc.connected),
+                "mt_connected": bool(self.mt),
+                "health_ok": self._watchdog_healthy,
+                "mappings": [list(p) for p in self.mappings],
+                "stats": self.stats,
+                "queue_mc": len(self.mc_pending),
+                "queue_mt": len(self.mt_pending),
+            }
+            self._mqtt_pub("status", status, retain=True)
+            if self.cfg.mqtt_hass_discovery:
+                self._mqtt_hass_discovery()
+
+    def _mqtt_hass_discovery(self):
+        """HA MQTT discovery pod homeassistant/<typ>/<uid>/config (retained)."""
+        p = self.cfg.mqtt_topic_prefix
+        st = f"{p}/status"
+        device = {"identifiers": ["meshbridge"], "name": "Mesh Bridge",
+                  "manufacturer": "meshcore-meshtastic-ble-bridge"}
+        items = [
+            ("binary_sensor", "meshbridge_mc", "MeshCore connected",
+             "{{ value_json.mc_connected }}", "connectivity"),
+            ("binary_sensor", "meshbridge_mt", "Meshtastic connected",
+             "{{ value_json.mt_connected }}", "connectivity"),
+            ("binary_sensor", "meshbridge_health", "Bridge health",
+             "{{ value_json.health_ok }}", None),
+            ("sensor", "meshbridge_mc_to_mt", "Forwarded MC→MT",
+             "{{ value_json.stats.mc_to_mt }}", None),
+            ("sensor", "meshbridge_mt_to_mc", "Forwarded MT→MC",
+             "{{ value_json.stats.mt_to_mc }}", None),
+            ("sensor", "meshbridge_mc_repeated", "Repeater echoes",
+             "{{ value_json.stats.mc_repeated }}", None),
+            ("sensor", "meshbridge_queue_mc", "Queue MC",
+             "{{ value_json.queue_mc }}", None),
+            ("sensor", "meshbridge_queue_mt", "Queue MT",
+             "{{ value_json.queue_mt }}", None),
+            ("sensor", "meshbridge_last_mc", "Last MeshCore message",
+             "{{ value_json.text }}", None),
+            ("sensor", "meshbridge_last_mt", "Last Meshtastic message",
+             "{{ value_json.text }}", None),
+        ]
+        topics = {  # sensor posledni zpravy cte jiny topic nez status
+            "meshbridge_last_mc": (f"{p}/mc/recv", None),
+            "meshbridge_last_mt": (f"{p}/mt/recv", None),
+        }
+        for typ, uid, name, tpl, dev_class in items:
+            cfg = {"name": name, "unique_id": uid, "device": device,
+                   "value_template": tpl}
+            if uid in topics:
+                cfg["state_topic"] = topics[uid][0]
+            else:
+                cfg["state_topic"] = st
+            if dev_class:
+                cfg["device_class"] = dev_class
+            self.mqtt.publish(f"homeassistant/{typ}/{uid}/config",
+                              cfg, retain=True)
 
     async def _mc_secret(self, mc_idx):
         """16bajtovy klic MC kanalu (cache; None = neznamy/prazdny slot)."""
@@ -818,6 +1097,9 @@ class Bridge:
 
     async def _on_mc_message(self, text, channel_idx, ts):
         try:
+            # MQTT feed (home automation) -- vsechny kanaly, i nebridgovane
+            self._mqtt_pub("mc/recv", {"ts": time.time(),
+                                       "channel": channel_idx, "text": text})
             mt_ch = self._mt_for_mc(channel_idx)
             if mt_ch is None:
                 return  # kanal neni bridgovany (ruzne kanaly existuji soucasne)
@@ -1102,6 +1384,10 @@ class Bridge:
             if restart:
                 log.warning("Config: az po restartu sluzby se projevi: %s",
                             ", ".join(restart))
+        # zmena MQTT parametru -> reconnect klienta hned
+        if any(k.startswith("mqtt.") for k in changed):
+            if self.mqtt:
+                self.mqtt.restart()
         self.write_status()
 
     def _mt_channels_sync(self):

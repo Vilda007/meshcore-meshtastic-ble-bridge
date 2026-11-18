@@ -27,9 +27,9 @@ if [ ! -d "$BRIDGE_DIR/venv" ]; then
     python3 -m venv "$BRIDGE_DIR/venv"
 fi
 "$BRIDGE_DIR/venv/bin/pip" install --upgrade pip
-# pycryptodome je volitelne (repeat-echo potvrzeni doruceni); bez nej
-# bridge bezi jen s TX-counter potvrzenim
-"$BRIDGE_DIR/venv/bin/pip" install bleak meshtastic pycryptodome
+# pycryptodome je volitelne (repeat-echo potvrzeni doruceni), paho-mqtt
+# volitelne MQTT strana; bez nich bridge bezi s omezenim prislusnych featur
+"$BRIDGE_DIR/venv/bin/pip" install bleak meshtastic pycryptodome paho-mqtt
 "$BRIDGE_DIR/venv/bin/python" -c "import bleak, meshtastic; print('libraries OK')"
 
 # 3) clock (for reliable timestamps)

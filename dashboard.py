@@ -32,9 +32,6 @@ EVENTS = os.path.join(BASE, "events.jsonl")
 STATUS = os.path.join(BASE, "status.json")
 CHANNELS = os.path.join(BASE, "channels.json")
 DB = os.path.join(BASE, "stats.db")   # SQLite feed + statistiky + config + users
-# Volitelny soubor s pristupovymi udaji bridgovaneho kanalu; NEPOSOILET
-# do repozitare -- obsahuje klice! (viz channel_info.json.example)
-CHANNEL_INFO = os.path.join(BASE, "channel_info.json")
 PORT = 8420
 
 BRIDGE_UNIT = "mesh-bridge"
@@ -261,6 +258,29 @@ def query_history(days=30):
         return None
     finally:
         conn.close()
+    # udtrzba: kumulativni soucty (vsech bezu) + hodnoty posledniho behu
+    mc_t = mt_t = 0
+    maint = {"mc_last": 0, "mt_last": 0, "last_ts": None}
+    try:
+        conn = db_connect()
+        try:
+            for r in conn.execute(
+                    "SELECT ts, extra FROM log WHERE kind='maintenance'"
+                    " ORDER BY ts"):
+                try:
+                    e = json.loads(r["extra"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                mc = int(e.get("mc_contacts_removed") or 0)
+                mt = int(e.get("mt_nodes_removed") or 0)
+                mc_t += mc
+                mt_t += mt
+                maint = {"mc_last": mc, "mt_last": mt, "last_ts": r["ts"]}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    maint.update({"mc_total": mc_t, "mt_total": mt_t})
     return {
         "days": [d.isoformat() for d in dates],
         "mc_to_mt": [fwd.get((d, "mc_to_mt"), 0) for d in range(days)],
@@ -270,6 +290,7 @@ def query_history(days=30):
                   for d in range(days)],
         "mt_up": [round(min(100, secs[d]["mt"] / denom[d] * 100), 1)
                   for d in range(days)],
+        "maint": maint,
     }
 
 
@@ -545,10 +566,6 @@ footer { color:var(--dim); font-size:12px; margin-top:16px; }
 </div>
 
 <script>
-// pristupove udaje bridgovaneho kanalu (channel_info.json na serveru);
-// null = soubor neexistuje, panel se nezobrazi
-const CHANNEL_INFO = __CHANNEL_INFO__;
-
 // ------------------------------------------------------------------- i18n
 // vychozi jazyk EN, vyber v cookie 'mclang' (prepinalac s vlajeckou)
 const I18N = {
@@ -583,6 +600,9 @@ const I18N = {
     b_conf_na: "air check unavailable",
     b_health: "health check FAILED",
     from: "from ",
+    maint_val: "last {last} · total {total} ",
+    ch_title: "Bridged channel",
+    ch_hint: "Live credentials of the bridged channel (from the bridge configuration). In MeshCore a channel is defined by its key, not its name — share the key only with people you want in the channel. In Meshtastic the channel is public by convention.",
     search_ph: "Search…",
     stats_title: "Statistics",
     c_msgs: "Forwarded messages / day",
@@ -637,6 +657,9 @@ const I18N = {
     b_conf_na: "kontrola vysílání nedostupná",
     b_health: "health kontrola SELHALA",
     from: "od ",
+    maint_val: "poslední {last} · celkem {total} ",
+    ch_title: "Sdílený kanál",
+    ch_hint: "Živé přístupové údaje bridgovaného kanálu (ze skutečné konfigurace bridge). V MeshCore kanál definuje klíč, ne název — klíč sdílej jen s kýmkoli má mít přístup. V Meshtastic je kanál veřejný podle konvence.",
     search_ph: "Hledat…",
     stats_title: "Statistiky",
     c_msgs: "Přeposlané zprávy / den",
@@ -717,6 +740,8 @@ let feed = { rows: [], total: 0 };
 let page = 0;                             // 0-based
 let search = "";
 let searchTimer = null;
+let history = null;                      // /api/history (grafy + udtrzba)
+let lastStatus = null;                   // posledni /api/status (karty)
 
 const EVMAP = {
   "recv":   e => e.side === "mc" ? "recv-mc" : "recv-mt",
@@ -726,6 +751,7 @@ const EVMAP = {
   "flush":  e => "fwd",
   "mc_repeat": e => "rep",
   "mc_confirm": e => "rep",
+  "mqtt": e => "state",
   "connect": e => "state", "disconnect": e => "state",
   "maintenance": e => "state",
   "health": e => "state",
@@ -743,21 +769,44 @@ function fmtTime(ts) {
     + " " + d.toLocaleTimeString("cs-CZ");
 }
 
-function renderChannelInfo() {
+function hexToB64(hex) {
+  const bytes = new Uint8Array((hex.match(/.{2}/g) || [])
+    .map(h => parseInt(h, 16)));
+  let bin = "";
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+
+async function loadChannelPanel() {
+  // panel s pristupovymi udaji kanalu -- ze SKUTECNE konfigurace bridge
+  // (status.json snapshot, /api/config); jen pro admina (je tam klic)
   const p = document.getElementById("channelPanel");
-  if (!CHANNEL_INFO || !Array.isArray(CHANNEL_INFO.rows)) { p.remove(); return; }
-  let html = "<h2>" + esc(CHANNEL_INFO.title || "Bridged channel") + "</h2>";
-  if (CHANNEL_INFO.hint)
-    html += '<p class="hint">' + esc(CHANNEL_INFO.hint) + "</p>";
-  for (const r of CHANNEL_INFO.rows) {
-    html += '<div class="chrow"><span class="tag ' + (r.side === "mt" ? "mt" : "mc")
-      + '">' + esc((r.side || "").toUpperCase()) + "</span> "
-      + esc(r.label || "") + ' / <code>' + esc(r.value || "") + "</code>"
-      + (r.note ? ' <span class="hex">(' + esc(r.note) + ")</span>" : "")
-      + "</div>";
-  }
-  p.innerHTML = html;
-  p.hidden = false;
+  if (!me || !me.is_admin) { p.hidden = true; return; }
+  try {
+    const r = await fetch("/api/config");
+    if (!r.ok) { p.hidden = true; return; }
+    const j = await r.json();
+    const v = j.values || {};
+    const mcKeyHex = (v["channels.mc_channel_key"] || "").replace(/\s/g, "");
+    const rows = [
+      { side: "mc", label: v["channels.mc_channel_name"] || "",
+        value: mcKeyHex ? hexToB64(mcKeyHex) : "",
+        note: "hex " + mcKeyHex },
+      { side: "mt", label: v["channels.mt_channel_name"] || "",
+        value: v["channels.mt_channel_psk"] || "" },
+    ];
+    let html = "<h2>" + esc(t("ch_title")) + "</h2>"
+      + '<p class="hint">' + esc(t("ch_hint")) + "</p>";
+    for (const r2 of rows) {
+      html += '<div class="chrow"><span class="tag ' + (r2.side === "mt" ? "mt" : "mc")
+        + '">' + esc(r2.side.toUpperCase()) + "</span> "
+        + esc(r2.label) + ' / <code>' + esc(r2.value) + "</code>"
+        + (r2.note ? ' <span class="hex">(' + esc(r2.note) + ")</span>" : "")
+        + "</div>";
+    }
+    p.innerHTML = html;
+    p.hidden = false;
+  } catch (e) { p.hidden = true; }
 }
 
 function badgeClass(ev) {
@@ -789,6 +838,7 @@ function badgeText(ev) {
       return ev.mc_tx === true ? t("b_conf_tx")
            : ev.mc_tx === false ? t("b_conf_no") : t("b_conf_na");
     case "health": return t("b_health");
+    case "mqtt": return "MQTT ▸ " + (ev.side || "?").toUpperCase();
     default: return ev.event;
   }
 }
@@ -813,8 +863,12 @@ function renderCards(st) {
     [t("card_fwd"), s.mc_to_mt ?? 0],
     [t("card_back"), s.mt_to_mc ?? 0],
     [t("card_queues"), (st.queue_mc||0) + " / " + (st.queue_mt||0)],
-    [t("card_maint_mc"), (s.mc_contacts_removed||0) + esc(t("contacts"))],
-    [t("card_maint_mt"), (s.mt_nodes_removed||0) + esc(t("nodes"))],
+    [t("card_maint_mc"), tf("maint_val", {last: (history && history.maint && history.maint.mc_last) || 0,
+                                           total: (history && history.maint && history.maint.mc_total) || 0})
+       + esc(t("contacts"))],
+    [t("card_maint_mt"), tf("maint_val", {last: (history && history.maint && history.maint.mt_last) || 0,
+                                          total: (history && history.maint && history.maint.mt_total) || 0})
+       + esc(t("nodes"))],
   ];
   document.getElementById("cards").innerHTML = cards.map(c =>
     '<div class="card"><div class="k">' + esc(c[0]) + '</div>'
@@ -1020,7 +1074,9 @@ function renderCharts(h) {
 async function loadHistory() {
   try {
     const r = await fetch("/api/history?days=30");
-    renderCharts(await r.json());
+    history = await r.json();
+    renderCharts(history);
+    if (me && lastStatus) renderCards(lastStatus);  // karty udruzby
   } catch (e) { /* db jeste neexistuje */ }
 }
 
@@ -1192,12 +1248,14 @@ async function refresh() {
       fetch("/api/power")
     ]);
     const st = await str.json();
+    lastStatus = st;
     power = await pwr.json();
     renderPower();
     renderCards(st);
     loadFeed();
     loadHistory();
     loadChannels();
+    if (me && me.is_admin) loadChannelPanel();
     document.getElementById("refresh").textContent =
       new Date().toLocaleTimeString("cs-CZ");
   } catch (e) { /* prazdne odpovedi pri startu */ }
@@ -1266,7 +1324,6 @@ document.getElementById("mapRows").addEventListener("change", () => {
   mapDirty = true;
 });
 applyLang();
-renderChannelInfo();
 checkAuth().then(ok => { if (ok) refresh(); });
 setInterval(() => { if (me) refresh(); }, 5000);
 </script>
@@ -1352,10 +1409,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            body = PAGE.replace(
-                "__CHANNEL_INFO__",
-                json.dumps(read_json(CHANNEL_INFO, None),
-                           ensure_ascii=False)).encode("utf-8")
+            body = PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

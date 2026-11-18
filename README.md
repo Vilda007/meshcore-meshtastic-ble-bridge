@@ -72,6 +72,15 @@ DMs are never bridged.
   (`/api/feed`) and daily aggregates (`/api/history`): messages/day per
   direction, reconnects/day and connected-time % per side (computed from
   connect/disconnect events, bridge start/stop boundaries included).
+- **MQTT side** (optional, `paho-mqtt`): feeds home-automation and web
+  clients — publishes every received mesh message, bridge status
+  (retained, every 60 s) and **Home Assistant MQTT discovery**, so
+  bridge entities (connectivity, forwarded counters, queues, last
+  messages) appear in HA automatically. Optional inbound topic posts
+  MQTT messages into the mesh. See [MQTT](#mqtt).
+- **Rate limiting** — per-direction minimum interval between forwarded
+  messages (`rate_limit_*`, 0 = off), protecting the LoRa channel from
+  floods and bursts; applies to live traffic and queue flushes.
 - **Daily maintenance** — clock sync of both radios, pruning of stale
   MeshCore contacts and Meshtastic nodeDB entries (favorites are never
   removed), with a per-run removal limit and a dry-run mode.
@@ -200,6 +209,7 @@ Configuration has **three layers** (lower overrides higher):
 | | `mt_channel_psk` | `AQ==` | MT PSK; `AQ==` = default public key (joinable by name) |
 | `[bridge]` | `prefix_to_mt` / `prefix_to_mc` | `MC:` / `MT:` | Forwarding prefixes (loop guard) |
 | | `mc_max_len` / `mt_max_len` | `120` / `200` | Max body length per side |
+| | `rate_limit_mc_to_mt` / `rate_limit_mt_to_mc` | `0` / `0` | Min seconds between two forwarded messages per direction (0 = off) |
 | | `dedup_cache` | `400` | LRU dedup cache entries |
 | | `log_level` | `INFO` | Logging verbosity |
 | | `event_log` / `status_file` | `events.jsonl` / `status.json` | Dashboard data files (↻) |
@@ -211,6 +221,12 @@ Configuration has **three layers** (lower overrides higher):
 | | `max_removals_per_run` | `10` | Removal safety limit |
 | | `health_grace_minutes` | `90` | Health self-check grace over the maintenance period |
 | | `dry_run` | `false` | Log only, delete nothing |
+| `[mqtt]` | `enabled` | `false` | MQTT client on/off (paho-mqtt) |
+| | `host` / `port` | *(none)* / `1883` | MQTT broker address |
+| | `user` / `password` | *(none)* | Broker credentials (password admin-only in the UI) |
+| | `topic_prefix` | `meshbridge` | Prefix for all bridge topics |
+| | `allow_inbound` | `false` | Accept `<prefix>/send` messages **into the mesh** |
+| | `hass_discovery` | `true` | Publish HA MQTT discovery (entities auto-appear) |
 
 Items marked **↻** apply only after a service restart (the Config page
 marks them the same way).
@@ -219,8 +235,6 @@ marks them the same way).
 
 - `config.ini` — your device names, your **channel key**
   (also editable later on the Config page)
-- `channel_info.json` (optional, from `channel_info.json.example`) — shown on
-  the dashboard panel; contains credentials
 - `deploy.local` (optional) — your SSH alias for `deploy.sh`
 - the **dashboard admin password** (default `admin`/`admin`, see above)
 
@@ -275,7 +289,10 @@ Runtime data files (all gitignored):
 | `events.jsonl` | Rotating event log (last 150 records, legacy/compact) |
 | `status.json` | Current state incl. config snapshot, updated every ~15 s |
 | `channels.json` | Discovered channel names (after both sides connect) |
-| `channel_info.json` | Optional credentials for the dashboard panel |
+
+The dashboard's channel-credentials panel renders **live from the bridge
+configuration** (admin only) — change the channel key on the Config page
+and the panel updates within seconds.
 
 > ⚠️ **Security**: the dashboard is reachable by anyone on your LAN
 > (login protects the data, but don't expose it to untrusted networks).
@@ -330,6 +347,33 @@ which so far has fixed every stuck-BLE state.
 
 `status.json` carries `health_ok` and `last_maintenance` for other
 monitoring tools.
+
+## MQTT
+
+Optional side for home automation / web clients (`[mqtt]` in the config,
+editable on the Config page; changes reconnect the client within ~15 s).
+Publishes (JSON, QoS 0):
+
+| Topic | Content |
+|---|---|
+| `<prefix>/mc/recv` | `{"ts","channel","text"}` — every MeshCore channel message (all channels, not just bridged) |
+| `<prefix>/mt/recv` | `{"ts","channel","src","text"}` — every Meshtastic channel message |
+| `<prefix>/status` | Bridge status (retained, every 60 s): connections, health, counters, queues, mappings |
+| `homeassistant/<type>/<uid>/config` | HA MQTT discovery (retained) — bridge entities appear in HA automatically (device *Mesh Bridge*: MeshCore/Meshtastic connectivity, health, forwarded counters, repeater echoes, queues, last messages) |
+
+Inbound (`allow_inbound = true`, subscribe only):
+
+| Topic | Payload |
+|---|---|
+| `<prefix>/send` | `{"side": "mc"\|"mt", "channel": <idx>, "text": "..."}` → sent into the mesh on that side (rate limits apply) |
+
+> ⚠️ **Inbound security**: anyone with broker credentials can post into
+> your mesh. Point the bridge at a trusted broker, use a dedicated
+> login, and keep `allow_inbound` off unless you need it.
+
+This is a readable JSON API (not the LetsMesh observer raw-packet
+format); anything that can speak MQTT — Home Assistant, Node-RED,
+scripts — can consume it.
 
 ## Daily maintenance
 
@@ -427,9 +471,9 @@ on the radios), with a web dashboard, offline queues and device maintenance.
 ## Roadmap / TODO
 
 Ideas for future versions — some inspired by the projects above
-(the first five have since been implemented, see *Delivery confirmation*,
-*Watchdog hardening*, the i18n dashboard, *Persistent statistics* and the
-auth + Config page above):
+(the first seven have since been implemented, see *Delivery confirmation*,
+*Watchdog hardening*, the i18n dashboard, *Persistent statistics*, the
+auth + Config page, *MQTT* and *Rate limiting* above):
 
 - [x] **Delivery confirmation** — track MeshCore repeater echoes to
       report whether a forwarded message actually went out over the air
@@ -441,13 +485,13 @@ auth + Config page above):
 - [x] **Persistent statistics** — SQLite-backed message/event history
       (searchable, paginated feed) and daily charts: forwarded messages,
       reconnects, uptime per side
-- [ ] **MQTT side** — bridge to/from an MQTT broker (MeshCore observer
-      format), so the bridge can feed home-automation and web clients
-      (à la AMMB)
+- [x] **MQTT side** — bridge to/from an MQTT broker, feeding
+      home-automation and web clients (readable JSON topics + HA
+      discovery; see above)
+- [x] **Rate limiting** — per-direction minimum interval between
+      forwarded messages, applied to live traffic and queue flushes
 - [ ] **REST API** with health/metrics/status endpoints and token auth
       (à la AMMB) for remote monitoring
-- [ ] **Rate limiting** — configurable per-window caps to prevent channel
-      flooding
 - [x] **Dashboard authentication** — login/logout with PBKDF2-hashed
       users, 30-day sessions, admin (config/mapping/power/users) vs
       read-only viewers; config itself moved to SQLite with a Config page

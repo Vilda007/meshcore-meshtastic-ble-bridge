@@ -1,8 +1,6 @@
 # --- secrets & personal configuration: NEVER commit ---
-# your real config (device names, channel keys) -- copy from config.ini.example
+# your real config (device names, channel keys, MQTT credentials) -- copy from config.ini.example
 config.ini
-# channel access credentials shown on the dashboard
-channel_info.json
 # maintainer's ops notes with credentials
 CLAUDE.md
 # maintainer's deploy target (ssh alias)

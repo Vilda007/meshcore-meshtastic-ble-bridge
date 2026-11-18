@@ -61,6 +61,14 @@ CONFIG_SCHEMA = {
         "label": "Repeat-echo confirmation window (s; 0 = off)",
         "type": "int", "min": 0, "max": 600, "restart": False,
         "section": "Bridge"},
+    "bridge.rate_limit_mc_to_mt": {
+        "label": "Rate limit: min seconds between two MC→MT forwards (0 = off)",
+        "type": "float", "min": 0, "max": 3600, "restart": False,
+        "section": "Bridge"},
+    "bridge.rate_limit_mt_to_mc": {
+        "label": "Rate limit: min seconds between two MT→MC forwards (0 = off)",
+        "type": "float", "min": 0, "max": 3600, "restart": False,
+        "section": "Bridge"},
     # ---------------- maintenance ----------------
     "maintenance.mc_contact_max_age_days": {
         "label": "Prune MC contacts older than (days)",
@@ -99,6 +107,32 @@ CONFIG_SCHEMA = {
     "channels.mt_channel_psk": {
         "label": "Meshtastic PSK (base64; AQ== = public default)",
         "type": "b64", "restart": False, "section": "Shared channel"},
+    # ---------------- MQTT ----------------
+    "mqtt.enabled": {
+        "label": "MQTT client enabled",
+        "type": "bool", "restart": False, "section": "MQTT"},
+    "mqtt.host": {
+        "label": "MQTT broker host (IP/hostname)",
+        "type": "str", "restart": False, "section": "MQTT"},
+    "mqtt.port": {
+        "label": "MQTT broker port",
+        "type": "int", "min": 1, "max": 65535, "restart": False,
+        "section": "MQTT"},
+    "mqtt.user": {
+        "label": "MQTT username (empty = none)",
+        "type": "str", "restart": False, "section": "MQTT"},
+    "mqtt.password": {
+        "label": "MQTT password",
+        "type": "str", "restart": False, "secret": True, "section": "MQTT"},
+    "mqtt.topic_prefix": {
+        "label": "MQTT topic prefix",
+        "type": "str", "restart": False, "section": "MQTT"},
+    "mqtt.allow_inbound": {
+        "label": "Accept MQTT <prefix>/send messages into the mesh",
+        "type": "bool", "restart": False, "section": "MQTT"},
+    "mqtt.hass_discovery": {
+        "label": "Publish Home Assistant MQTT discovery (entities auto-appear)",
+        "type": "bool", "restart": False, "section": "MQTT"},
 }
 
 
@@ -126,6 +160,16 @@ CONFIG_ATTR = {
     "channels.mc_channel_key": "mc_channel_key",
     "channels.mt_channel_name": "mt_channel_name",
     "channels.mt_channel_psk": "mt_channel_psk",
+    "bridge.rate_limit_mc_to_mt": "rate_limit_mc_to_mt",
+    "bridge.rate_limit_mt_to_mc": "rate_limit_mt_to_mc",
+    "mqtt.enabled": "mqtt_enabled",
+    "mqtt.host": "mqtt_host",
+    "mqtt.port": "mqtt_port",
+    "mqtt.user": "mqtt_user",
+    "mqtt.password": "mqtt_password",
+    "mqtt.topic_prefix": "mqtt_topic_prefix",
+    "mqtt.allow_inbound": "mqtt_allow_inbound",
+    "mqtt.hass_discovery": "mqtt_hass_discovery",
 }
 
 
