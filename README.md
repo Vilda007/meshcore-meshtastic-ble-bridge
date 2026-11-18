@@ -18,6 +18,13 @@ Messages received on a bridged MeshCore channel are re-sent on the paired
 Meshtastic channel (prefixed `MC: `), and vice versa (prefixed `MT: `).
 DMs are never bridged.
 
+> **Reference deployment:** this bridge is developed and continuously tested
+> on a live installation in **Brno, Czech Republic**, running on compact
+> indoor nodes with *(very)* limited radio range. Most of the traffic you
+> may see on the bridged channels is Czech chat and test messages — don't
+> be surprised, and don't expect to reach the test nodes from afar. The
+> bridge's range depends entirely on the radios you attach to it.
+
 ## Highlights
 
 - **Pure BLE on both ends** — the radios stay portable and cable-free; the Pi
@@ -244,9 +251,19 @@ marks them the same way).
 MeshCore has no "public channels by name" — a channel *is* its 16-byte key
 (`SHA256(key)` = channel hash). The Meshtastic convention is the opposite:
 a channel is public when it uses the default PSK (`AQ==`), joinable by name.
+So a shared channel needs a different setup on each side.
 
-`create_channel.py` sets up the same-named channel on both devices
-(idempotent, reads everything from `config.ini`):
+The reference installation bridges a shared channel named **`#meshbridge`**:
+
+| Side | Channel setup |
+|---|---|
+| **MeshCore** | Keyed channel: lowercase name `#meshbridge` + its own generated 16-byte key (the `mc_channel_key` setting). The key **is** the channel and is a *secret* — the test bridge's key is intentionally not published; if you want to join the test channel, ask the maintainer. (MeshCore channel names must be lowercase.) |
+| **Meshtastic** | Public by convention: a secondary channel named `#meshbridge` with the default PSK `AQ==` — anyone can join simply by adding a channel with the same name and default key. |
+
+For your own installation, generate your own MeshCore channel key (e.g.
+`python3 -c "import os; print(os.urandom(16).hex())"`), put the name/key/PSK
+in the `channels.*` settings, and let `create_channel.py` set the channel up
+on both devices (idempotent; it reads everything from the configuration):
 
 ```bash
 sudo systemctl stop mesh-bridge
