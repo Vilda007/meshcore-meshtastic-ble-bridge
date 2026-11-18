@@ -8,7 +8,7 @@ set -e
 # maintainer's local override (never committed)
 [ -f deploy.local ] && . deploy.local
 PI="${PI:-raspberrypi.local}"
-DEST="/home/PI-USER/mesh-bridge"   # adjust to your user on the Pi
+DEST="${DEST:-/home/pi/mesh-bridge}"   # adjust to your user on the Pi
 
 FILES="bridge.py meshcore_ble.py pair_bt.py dashboard.py create_channel.py
        config.ini config.ini.example channel_info.json.example install.sh
