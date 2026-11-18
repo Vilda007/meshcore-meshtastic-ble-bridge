@@ -93,20 +93,22 @@ CONFIG_SCHEMA = {
     "maintenance.dry_run": {
         "label": "Dry run (only log what would be removed)",
         "type": "bool", "restart": False, "section": "Maintenance"},
-    # ---------------- shared channel (create_channel.py) ----------------
+    # ---------------- shared channel setup (create_channel.py) ----------------
     "channels.mc_channel_name": {
-        "label": "MeshCore channel name (lowercase only)",
-        "type": "str", "restart": False, "section": "Shared channel"},
+        "label": "Shared channel: MeshCore name (lowercase; setup + "
+                 "credentials panel, NOT the bridging pairs)",
+        "type": "str", "restart": False, "section": "Shared channel setup"},
     "channels.mc_channel_key": {
-        "label": "MeshCore channel key (16-byte hex) -- SECRET",
+        "label": "Shared channel: MeshCore key (16-byte hex) -- SECRET",
         "type": "hex16", "restart": False, "secret": True,
-        "section": "Shared channel"},
+        "section": "Shared channel setup"},
     "channels.mt_channel_name": {
-        "label": "Meshtastic channel name",
-        "type": "str", "restart": False, "section": "Shared channel"},
+        "label": "Shared channel: Meshtastic name (setup only)",
+        "type": "str", "restart": False, "section": "Shared channel setup"},
     "channels.mt_channel_psk": {
-        "label": "Meshtastic PSK (base64; AQ== = public default)",
-        "type": "b64", "restart": False, "section": "Shared channel"},
+        "label": "Shared channel: Meshtastic PSK (base64; AQ== = public "
+                 "default; setup only)",
+        "type": "b64", "restart": False, "section": "Shared channel setup"},
     # ---------------- MQTT ----------------
     "mqtt.enabled": {
         "label": "MQTT client enabled",
