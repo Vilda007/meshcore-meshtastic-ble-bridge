@@ -445,7 +445,8 @@ a { color:var(--mt); }
 .bar.warn { background:var(--warn); }
 .crow { display:flex; align-items:center; gap:10px; margin-bottom:6px;
   flex-wrap:wrap; }
-.crow label { flex:1; min-width:220px; color:var(--dim); font-size:12px; }
+.crow label { flex:1; min-width:220px; color:var(--dim); font-size:12px;
+  cursor:help; }
 .crow input, .crow select { flex:0 1 240px; max-width:240px; }
 .urow { display:flex; gap:10px; align-items:center; margin-bottom:6px;
   flex-wrap:wrap; }
@@ -624,7 +625,41 @@ const I18N = {
     u_pw_old: "Current password", u_pw_new: "New password",
     pw_saved: "Password changed ✓.", pw_fail: "Change failed.",
     u_saved: "User added ✓.", u_del: "×",
-    generic_fail: "Failed."
+    generic_fail: "Failed.",
+    cfg_hints: {
+      "meshcore.device": "BLE name substring used to find the MeshCore companion node when scanning. Empty = first MeshCore device found. Changing this needs a bridge restart (↻).",
+      "meshcore.channel": "Fallback MC channel index used only when no mapping pairs are defined (Dashboard → Channel mapping). The mapping normally takes precedence.",
+      "meshcore.poll_interval": "Seconds between polls of the MeshCore node; the poll also keeps the BLE link alive. Lower = faster message pickup but more BLE traffic.",
+      "meshtastic.device": "BLE name or MAC of the Meshtastic node. Empty = first Meshtastic device found. Restart required (↻). The node must not be in light sleep (run setup_tbeam.py to disable it).",
+      "meshtastic.channel": "Fallback MT channel index used only when no mapping pairs are defined. The mapping normally takes precedence.",
+      "bridge.prefix_to_mt": "Prefix added to every message forwarded MC→MT ('MC: text'). Doubles as the loop guard: received messages starting with MC:/MT: are never forwarded again.",
+      "bridge.prefix_to_mc": "Prefix added to every message forwarded MT→MC ('MT: text'). Doubles as the loop guard.",
+      "bridge.mc_max_len": "Max message body length towards MeshCore (protocol limit ~133 chars). Longer texts are split into [i/n] chunks.",
+      "bridge.mt_max_len": "Max message body length towards Meshtastic (~233 chars). Longer texts are split into [i/n] chunks.",
+      "bridge.dedup_cache": "Size of the LRU cache that suppresses duplicate messages (by id/hash).",
+      "bridge.log_level": "Log verbosity in the systemd journal. INFO normally, DEBUG for troubleshooting.",
+      "bridge.mc_confirm_window": "After forwarding into MeshCore, listen this many seconds for a repeater echo of exactly that message (byte-exact match, shown as a green badge). 0 = echo tracking off (the TX-counter check still runs).",
+      "bridge.rate_limit_mc_to_mt": "Minimum seconds between two MC→MT forwards. Protects the LoRa channel from floods and bursts; 0 = off. Applies to live traffic and queue flushes.",
+      "bridge.rate_limit_mt_to_mc": "Minimum seconds between two MT→MC forwards. 0 = off.",
+      "maintenance.mc_contact_max_age_days": "MeshCore contacts not modified for this many days are pruned in the daily maintenance. Favorites are never removed.",
+      "maintenance.mt_node_max_age_days": "Meshtastic nodeDB nodes not heard from for this many days are pruned. Favorites and this node itself are never removed.",
+      "maintenance.maintenance_interval_hours": "How often the maintenance runs: clock sync of both devices + pruning.",
+      "maintenance.max_removals_per_run": "Safety cap on deletions per maintenance run, so a misconfiguration cannot wipe everything at once.",
+      "maintenance.health_grace_minutes": "The watchdog restarts the bridge when a maintenance run hasn't completed within the period + this grace (minutes).",
+      "maintenance.dry_run": "Log what the maintenance would remove, but delete nothing.",
+      "channels.mc_channel_name": "Name of the shared MeshCore channel (lowercase only — the app rejects uppercase). Used by create_channel.py to find/create the channel and by the credentials panel. NOT the bridging pairs — see Dashboard → Channel mapping.",
+      "channels.mc_channel_key": "16-byte hex key of the shared MeshCore channel — the channel IS the key (SHA256(key) = channel hash). SECRET: share only with people you want in the channel. Used by create_channel.py and the credentials panel.",
+      "channels.mt_channel_name": "Meshtastic shared channel name (setup only, create_channel.py).",
+      "channels.mt_channel_psk": "Meshtastic channel PSK (base64). 'AQ==' is the public-by-convention default — anyone can join by adding a channel of the same name. Setup only (create_channel.py).",
+      "mqtt.enabled": "Connect the bridge to an MQTT broker (paho-mqtt). Publishes mesh messages, status and HA discovery. Changes reconnect within ~15 s.",
+      "mqtt.host": "MQTT broker hostname or IP (e.g. the Home Assistant host running the Mosquitto add-on).",
+      "mqtt.port": "MQTT broker port (default 1883; TLS is not supported yet).",
+      "mqtt.user": "Broker username (empty = anonymous). Use a dedicated login for the bridge.",
+      "mqtt.password": "Broker password. Stored in the SQLite config table; visible to admins only.",
+      "mqtt.topic_prefix": "Prefix for all bridge topics: <prefix>/mc/recv, <prefix>/mt/recv, <prefix>/status and the inbound <prefix>/send.",
+      "mqtt.allow_inbound": "Accept JSON messages from <prefix>/send into the mesh: {\"side\":\"mc\"|\"mt\",\"channel\":N,\"text\":\"...\"}. Anyone with broker credentials can post into your mesh — enable only on a trusted broker.",
+      "mqtt.hass_discovery": "Publish Home Assistant MQTT discovery (retained) so bridge entities appear in HA automatically (device 'Mesh Bridge': connectivity, counters, queues, last messages)."
+    }
   },
   cs: {
     sub: "MeshCore ↔ Meshtastic",
@@ -681,7 +716,41 @@ const I18N = {
     u_pw_old: "Současné heslo", u_pw_new: "Nové heslo",
     pw_saved: "Heslo změněno ✓.", pw_fail: "Změna selhala.",
     u_saved: "Uživatel přidán ✓.", u_del: "×",
-    generic_fail: "Selhalo."
+    generic_fail: "Selhalo.",
+    cfg_hints: {
+      "meshcore.device": "Podřetězec BLE názvu, podle kterého se při skenu hledá MeshCore companion uzel. Prázdné = první nalezené MeshCore zařízení. Změna vyžaduje restart bridge (↻).",
+      "meshcore.channel": "Výchozí index MC kanálu — použije se jen, když není definované žádné mapování (Přehled → Mapování kanálů). Normálně má mapování přednost.",
+      "meshcore.poll_interval": "Sekundy mezi poll zpráv z MeshCore uzlu; poll zároveň drží BLE spojení při životě. Nižší = rychlejší vyzvednutí zpráv, ale víc BLE provozu.",
+      "meshtastic.device": "BLE název nebo MAC adresa Meshtastic uzlu. Prázdné = první nalezené Meshtastic zařízení. Vyžaduje restart (↻). Uzel nesmí být v light sleep (vypni ho skriptem setup_tbeam.py).",
+      "meshtastic.channel": "Výchozí index MT kanálu — použije se jen bez definovaného mapování. Normálně má mapování přednost.",
+      "bridge.prefix_to_mt": "Prefix přidaný ke každé zprávě přeposlané MC→MT („MC: text“). Zároveň ochrana proti zacyklení: přijaté zprávy začínající MC:/MT: se už nikdy nepřeposílají.",
+      "bridge.prefix_to_mc": "Prefix přidaný ke každé zprávě přeposlané MT→MC („MT: text“). Zároveň ochrana proti zacyklení.",
+      "bridge.mc_max_len": "Maximální délka těla zprávy na MeshCore stranu (limit protokolu ~133 znaků). Delší texty se rozsekají na kusy [i/n].",
+      "bridge.mt_max_len": "Maximální délka těla zprávy na Meshtastic stranu (~233 znaků). Delší texty se rozsekají na kusy [i/n].",
+      "bridge.dedup_cache": "Velikost LRU cache, která potlačuje duplicitní zprávy (podle id/hasheru).",
+      "bridge.log_level": "Úroveň logování do systemd journal. Běžně INFO, při ladění DEBUG.",
+      "bridge.mc_confirm_window": "Po přeposlání do MeshCore bridge tento počet sekund čeká na repeat-echo právě této zprávy (porovnání bajtově přesné, zelený odznak). 0 = sledování echa vypnuté (kontrola přes TX čítač běží dál).",
+      "bridge.rate_limit_mc_to_mt": "Minimální počet sekund mezi dvěma přeposlanými zprávami MC→MT. Chrání LoRa kanál před záplavou a nápory zpráv; 0 = vypnuto. Platí i pro vyprazdňování front.",
+      "bridge.rate_limit_mt_to_mc": "Minimální počet sekund mezi dvěma přeposlanými zprávami MT→MC. 0 = vypnuto.",
+      "maintenance.mc_contact_max_age_days": "MeshCore kontakty, které nebyly upraveny tento počet dní, denní údržba promaže. Favoriti se nikdy nemažou.",
+      "maintenance.mt_node_max_age_days": "Uzly v Meshtastic nodeDB, od kterých tento počet dní nic nebylo slyšet, údržba promaže. Favoriti ani vlastní uzel se nikdy nemažou.",
+      "maintenance.maintenance_interval_hours": "Jak často běží údržba: synchronizace hodin obou zařízení + promazávání.",
+      "maintenance.max_removals_per_run": "Bezpečnostní strop počtu mazání na jeden běh údržby, aby chyba konfigurace nemohla smazat všechno naráz.",
+      "maintenance.health_grace_minutes": "Watchdog restartuje bridge, když údržba nedoběhne do periody + této rezervy (minuty).",
+      "maintenance.dry_run": "Údržba jen zaloguje, co by smazala, ale nemaže nic.",
+      "channels.mc_channel_name": "Název sdíleného MeshCore kanálu (pouze malými písmeny — aplikace velká odmítá). Používá create_channel.py k nalezení/vytvoření kanálu a panel přístupových údajů. NEJSOU to páry pro přeposílání — viz Přehled → Mapování kanálů.",
+      "channels.mc_channel_key": "16bajtový hex klíč sdíleného MeshCore kanálu — kanál JE klíč (SHA256(klíč) = hash kanálu). TAJNÉ: sdílej jen s kýmkoli má mít přístup. Používá create_channel.py a panel přístupových údajů.",
+      "channels.mt_channel_name": "Název sdíleného Meshtastic kanálu (jen pro setup, create_channel.py).",
+      "channels.mt_channel_psk": "PSK Meshtastic kanálu (base64). „AQ==“ je veřejný klíč dle konvence — kdokoli se připojí přidáním kanálu stejného názvu. Jen pro setup (create_channel.py).",
+      "mqtt.enabled": "Připojí bridge k MQTT brokeru (paho-mqtt). Publikuje zprávy ze sítě, status a HA discovery. Změny se projeví reconnectem do ~15 s.",
+      "mqtt.host": "Hostname nebo IP MQTT brokeru (třeba Host s Mosquitto add-onem).",
+      "mqtt.port": "Port MQTT brokeru (výchozí 1883; TLS zatím nepodporované).",
+      "mqtt.user": "Uživatelské jméno brokera (prázdné = anonymně). Použij pro bridge dedikovaný login.",
+      "mqtt.password": "Heslo brokera. Uložené v SQLite config tabulce; vidí jen admin.",
+      "mqtt.topic_prefix": "Prefix všech témat bridge: <prefix>/mc/recv, <prefix>/mt/recv, <prefix>/status a inbound <prefix>/send.",
+      "mqtt.allow_inbound": "Přijímá JSON zprávy z <prefix>/send do sítě: {\"side\":\"mc\"|\"mt\",\"channel\":N,\"text\":\"...\"}. KDOKOLI s přihlašovacími údaji brokera může poslat zprávu do tvé sítě — povol jen na důvěryhodném brokeru.",
+      "mqtt.hass_discovery": "Publikuje Home Assistant MQTT discovery (retained) — entity bridge se v HA objeví samy (device „Mesh Bridge“: spojení, čítače, fronty, poslední zprávy)."
+    }
   }
 };
 
@@ -1120,6 +1189,11 @@ async function doLogout() {
 }
 
 // ----------------------------------------------------------------- config
+function cfgHint(key) {
+  return (I18N[LANG] && I18N[LANG].cfg_hints && I18N[LANG].cfg_hints[key])
+    || (I18N.en.cfg_hints && I18N.en.cfg_hints[key]) || "";
+}
+
 async function loadConfig() {
   if (!me || !me.is_admin) return;
   const r = await fetch("/api/config");
@@ -1132,6 +1206,7 @@ async function loadConfig() {
     for (const key of sec.keys) {
       const m = j.meta[key] || {};
       const val = j.values[key] ?? "";
+      const hint = cfgHint(key);
       let field;
       if (m.type === "bool") {
         field = '<input type="checkbox" data-key="' + key + '"'
@@ -1148,8 +1223,11 @@ async function loadConfig() {
         field = '<input type="' + (m.secret ? "password" : "text")
           + '" data-key="' + key + '" value="' + esc(val) + '">';
       }
-      html += '<div class="crow"><label>' + esc(m.label || key)
+      html += '<div class="crow"><label title="' + esc(hint) + '">'
+        + esc(m.label || key)
         + (m.restart ? ' <span class="hex">&#8635;</span>' : "")
+        + (hint ? ' <span class="hex" title="' + esc(hint)
+          + '">&#9432;</span>' : "")
         + '</label>' + field + "</div>";
     }
   }
