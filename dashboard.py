@@ -595,7 +595,7 @@ const I18N = {
     b_fwd_mt: "MC ▸▸ MT", b_fwd_mc: "MT ▸▸ MC",
     b_drop: "filter: ", b_queued: "queued", b_flush: "flushed from queue",
     b_connect: " connected", b_disconnect: " disconnected",
-    b_maint: "maintenance: MC −{mc} contacts, MT −{mt} nodes",
+    b_maint: "maintenance: MC −{mc} contacts, MT −{mt} nodes, log −{log}",
     b_repeat: "repeater echo ✓ SNR {snr} dB · {rssi} dBm · {delay} s",
     b_conf_tx: "on air (TX counter)", b_conf_no: "no air activity",
     b_conf_na: "air check unavailable",
@@ -641,6 +641,7 @@ const I18N = {
       "bridge.mc_confirm_window": "After forwarding into MeshCore, listen this many seconds for a repeater echo of exactly that message (byte-exact match, shown as a green badge). 0 = echo tracking off (the TX-counter check still runs).",
       "bridge.rate_limit_mc_to_mt": "Minimum seconds between two MC→MT forwards. Protects the LoRa channel from floods and bursts; 0 = off. Applies to live traffic and queue flushes.",
       "bridge.rate_limit_mt_to_mc": "Minimum seconds between two MT→MC forwards. 0 = off.",
+      "bridge.log_retention_days": "Auto-prune of the message/event log (feed history, statistics source): entries older than this many days are deleted once a day with the maintenance. 0 = keep forever. Charts and uptime are computed from these records — very old data only matters for long-term history.",
       "maintenance.mc_contact_max_age_days": "MeshCore contacts not modified for this many days are pruned in the daily maintenance. Favorites are never removed.",
       "maintenance.mt_node_max_age_days": "Meshtastic nodeDB nodes not heard from for this many days are pruned. Favorites and this node itself are never removed.",
       "maintenance.maintenance_interval_hours": "How often the maintenance runs: clock sync of both devices + pruning.",
@@ -686,7 +687,7 @@ const I18N = {
     b_fwd_mt: "MC ▸▸ MT", b_fwd_mc: "MT ▸▸ MC",
     b_drop: "filtr: ", b_queued: "ve frontě", b_flush: "vypláceno z fronty",
     b_connect: " připojeno", b_disconnect: " odpojeno",
-    b_maint: "údržba: MC −{mc} kontaktů, MT −{mt} uzlů",
+    b_maint: "údržba: MC −{mc} kontaktů, MT −{mt} uzlů, log −{log}",
     b_repeat: "echo repeateru ✓ SNR {snr} dB · {rssi} dBm · {delay} s",
     b_conf_tx: "vysíláno (TX čítač)", b_conf_no: "bez vysílání",
     b_conf_na: "kontrola vysílání nedostupná",
@@ -732,6 +733,7 @@ const I18N = {
       "bridge.mc_confirm_window": "Po přeposlání do MeshCore bridge tento počet sekund čeká na repeat-echo právě této zprávy (porovnání bajtově přesné, zelený odznak). 0 = sledování echa vypnuté (kontrola přes TX čítač běží dál).",
       "bridge.rate_limit_mc_to_mt": "Minimální počet sekund mezi dvěma přeposlanými zprávami MC→MT. Chrání LoRa kanál před záplavou a nápory zpráv; 0 = vypnuto. Platí i pro vyprazdňování front.",
       "bridge.rate_limit_mt_to_mc": "Minimální počet sekund mezi dvěma přeposlanými zprávami MT→MC. 0 = vypnuto.",
+      "bridge.log_retention_days": "Automatické promazání logu zpráv/událostí (historie feedu, zdroj statistik): záznamy starší než tento počet dní se smažou jednou denně s údržbou. 0 = ponechat navždy. Grafy a uptime se počítají z těchto záznamů — stará data mají vliv jen na dlouhodobou historii.",
       "maintenance.mc_contact_max_age_days": "MeshCore kontakty, které nebyly upraveny tento počet dní, denní údržba promaže. Favoriti se nikdy nemažou.",
       "maintenance.mt_node_max_age_days": "Uzly v Meshtastic nodeDB, od kterých tento počet dní nic nebylo slyšet, údržba promaže. Favoriti ani vlastní uzel se nikdy nemažou.",
       "maintenance.maintenance_interval_hours": "Jak často běží údržba: synchronizace hodin obou zařízení + promazávání.",
@@ -900,7 +902,8 @@ function badgeText(ev) {
     case "disconnect": return (ev.side||"") + t("b_disconnect");
     case "maintenance":
       return tf("b_maint", {mc: ev.mc_contacts_removed||0,
-                            mt: ev.mt_nodes_removed||0});
+                            mt: ev.mt_nodes_removed||0,
+                            log: ev.log_pruned||0});
     case "mc_repeat":
       return tf("b_repeat", {snr: ev.snr, rssi: ev.rssi, delay: ev.delay_s});
     case "mc_confirm":

@@ -69,6 +69,10 @@ CONFIG_SCHEMA = {
         "label": "Rate limit: min seconds between two MT→MC forwards (0 = off)",
         "type": "float", "min": 0, "max": 3600, "restart": False,
         "section": "Bridge"},
+    "bridge.log_retention_days": {
+        "label": "Auto-prune log entries older than (days; 0 = keep forever)",
+        "type": "int", "min": 0, "max": 3650, "restart": False,
+        "section": "Bridge"},
     # ---------------- maintenance ----------------
     "maintenance.mc_contact_max_age_days": {
         "label": "Prune MC contacts older than (days)",
@@ -164,6 +168,7 @@ CONFIG_ATTR = {
     "channels.mt_channel_psk": "mt_channel_psk",
     "bridge.rate_limit_mc_to_mt": "rate_limit_mc_to_mt",
     "bridge.rate_limit_mt_to_mc": "rate_limit_mt_to_mc",
+    "bridge.log_retention_days": "log_retention_days",
     "mqtt.enabled": "mqtt_enabled",
     "mqtt.host": "mqtt_host",
     "mqtt.port": "mqtt_port",

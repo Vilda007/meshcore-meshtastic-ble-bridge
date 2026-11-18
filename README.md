@@ -210,6 +210,7 @@ Configuration has **three layers** (lower overrides higher):
 | `[bridge]` | `prefix_to_mt` / `prefix_to_mc` | `MC:` / `MT:` | Forwarding prefixes (loop guard) |
 | | `mc_max_len` / `mt_max_len` | `120` / `200` | Max body length per side |
 | | `rate_limit_mc_to_mt` / `rate_limit_mt_to_mc` | `0` / `0` | Min seconds between two forwarded messages per direction (0 = off) |
+| | `log_retention_days` | `0` | Auto-prune feed/statistics entries older than this many days, once a day with the maintenance (0 = keep forever) |
 | | `dedup_cache` | `400` | LRU dedup cache entries |
 | | `log_level` | `INFO` | Logging verbosity |
 | | `event_log` / `status_file` | `events.jsonl` / `status.json` | Dashboard data files (↻) |

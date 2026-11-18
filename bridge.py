@@ -118,6 +118,8 @@ class Config:
         self.rate_limit_mc_to_mt = br.getfloat("rate_limit_mc_to_mt", 0.0)
         self.rate_limit_mt_to_mc = br.getfloat("rate_limit_mt_to_mc", 0.0)
         self.dedup_cache = br.getint("dedup_cache", 400)
+        # automaticke promazani zaznamu ve feedu/statistikach (0 = navzdy)
+        self.log_retention_days = br.getint("log_retention_days", 0)
         self.log_level = br.get("log_level", "INFO").upper()
         self.log_file = br.get("log_file", "")  # prazdne = jen konzola/journal
         # dashboard: JSONL event log + status soubor (relativni = vedle configu)
@@ -1168,9 +1170,11 @@ class Bridge:
         await self._mt_sync_clock()
         mc_removed = await self._maintain_meshcore()
         mt_removed = await self._maintain_meshtastic()
+        log_pruned = self._prune_log()
         await self._elog("maintenance", mc_clock_drift=mc_drift,
                          mc_contacts_removed=mc_removed,
-                         mt_nodes_removed=mt_removed)
+                         mt_nodes_removed=mt_removed,
+                         log_pruned=log_pruned)
         self._last_maintenance_ok = time.time()   # health self-check
         self.write_status()
         log.info("UDRZBA: konec")
@@ -1187,6 +1191,27 @@ class Bridge:
             self._mt_broken(f"setTime timeout (>{MT_OP_TIMEOUT} s)")
         except Exception as e:
             log.warning("MT: nastaveni hodin selhalo: %r", e)
+
+    def _prune_log(self):
+        """Smaze zaznamy ve feedu/statistikach starsi nez log_retention_days.
+
+        (0 = ponechat navzdy; spousti se jednou denne s udruzbou.)
+        """
+        days = self.cfg.log_retention_days
+        if days <= 0 or not self.db:
+            return 0
+        cutoff = time.time() - days * 86400
+        try:
+            cur = self.db.conn.execute("DELETE FROM log WHERE ts < ?",
+                                       (cutoff,))
+            self.db.conn.commit()
+        except sqlite3.Error as e:
+            log.warning("UDRZBA: prune logu selhal: %r", e)
+            return 0
+        if cur.rowcount:
+            log.info("UDRZBA: promazano %d zaznamu starsich %d dnu",
+                     cur.rowcount, days)
+        return cur.rowcount
 
     async def _maintain_meshcore(self):
         """Promaze dlouho neaktivni kontakty (favoriti se preskakuji).
