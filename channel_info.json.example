@@ -1,0 +1,8 @@
+{
+  "title": "Bridged channel",
+  "hint": "Access credentials of the bridged channel. Copy to channel_info.json and fill in your values -- the dashboard shows this panel only when the file exists. NEVER commit channel_info.json, it contains secrets.",
+  "rows": [
+    {"side": "mc", "label": "#your-channel", "value": "BASE64-OF-YOUR-MESHCORE-CHANNEL-KEY", "note": "hex 00112233445566778899aabbccddeeff"},
+    {"side": "mt", "label": "#your-channel", "value": "AQ=="}
+  ]
+}

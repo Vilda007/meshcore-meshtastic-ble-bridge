@@ -1,0 +1,26 @@
+# --- secrets & personal configuration: NEVER commit ---
+# your real config (device names, channel keys) -- copy from config.ini.example
+config.ini
+# channel access credentials shown on the dashboard
+channel_info.json
+# maintainer's ops notes with credentials
+CLAUDE.md
+# maintainer's deploy target (ssh alias)
+deploy.local
+
+# --- runtime data (created by the bridge/dashboard on the device) ---
+events.jsonl
+status.json
+status.json.tmp
+mappings.json
+channels.json
+*.tmp
+
+# --- python ---
+venv/
+__pycache__/
+*.pyc
+
+# --- misc logs/backups ---
+mt_serial_listen_*.txt
+*.bak*

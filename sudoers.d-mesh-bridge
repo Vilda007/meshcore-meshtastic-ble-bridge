@@ -1,0 +1,8 @@
+# OPTIONAL sudoers rule: lets the dashboard (running as your user) start/stop
+# the mesh-bridge service from the web UI without a password. Only needed if
+# your user does NOT have NOPASSWD sudo already.
+# Replace __BRIDGE_USER__ with your username, then:
+#   sudo install -m 0440 sudoers.d-mesh-bridge /etc/sudoers.d/mesh-bridge
+#   sudo visudo -cf /etc/sudoers.d/mesh-bridge
+# The command form must match dashboard.py _post_power exactly.
+__BRIDGE_USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start mesh-bridge, /usr/bin/systemctl --no-block stop mesh-bridge

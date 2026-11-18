@@ -1,0 +1,64 @@
+# MeshCore <-> Meshtastic bridge -- configuration
+# Copy this file to config.ini and edit the values marked REPLACE.
+# config.ini contains your device names and channel keys -- it is
+# gitignored on purpose, never commit it.
+
+[meshcore]
+# Substring of the BLE device name; empty = first MeshCore companion found
+device = REPLACE_WITH_MESHCORE_NODE_NAME
+# Default MC channel (used when [channels] mappings is absent)
+channel = 0
+# How often to poll messages / keep the BLE link alive (seconds)
+poll_interval = 30
+
+[meshtastic]
+# BLE device name or MAC; empty = first Meshtastic device found
+device = REPLACE_WITH_MESHTASTIC_NODE_NAME
+# Default MT channel (used when [channels] mappings is absent)
+channel = 0
+
+[channels]
+# Which channel pairs get bridged: "mc_channel:mt_channel, mc:mt, ..."
+#  0:0  = MC channel 0 (Public) <-> MT channel 0 (primary)
+# Runtime changes are made from the dashboard (mappings.json), which
+# takes precedence; the bridge picks them up within ~15 s.
+mappings = 0:0
+# --- shared channel setup, used by create_channel.py ---
+# MeshCore channel KEY (a channel is defined by its key, not its name!).
+# SECRET -- never share or commit. Generate one, e.g.:
+#   python3 -c "import os; print(os.urandom(16).hex())"
+# Channel names must be lowercase (the MeshCore app rejects uppercase).
+mc_channel_name = #meshbridge
+mc_channel_key = REPLACE_WITH_16_BYTE_HEX_KEY
+mt_channel_name = #meshbridge
+# MT PSK: "AQ==" = default public key (channel joinable by name, like the
+# default Meshtastic channels)
+mt_channel_psk = AQ==
+
+[bridge]
+# Prefixes added when forwarding (no trailing space; it gets appended)
+prefix_to_mt = MC:
+prefix_to_mc = MT:
+# Max body length towards the other side (MeshCore limit ~133 chars)
+mc_max_len = 120
+mt_max_len = 200
+# Dedup LRU cache size (messages)
+dedup_cache = 400
+log_level = INFO
+# Rotating log file; empty = stdout only (systemd journal)
+log_file =
+# Dashboard: event log (JSONL) and status file (relative to this config)
+event_log = events.jsonl
+status_file = status.json
+
+[maintenance]
+# Prune MeshCore contacts inactive longer than this (favorites never removed)
+mc_contact_max_age_days = 14
+# Prune Meshtastic nodeDB nodes not heard from longer than this
+mt_node_max_age_days = 7
+# How often maintenance runs (hours)
+maintenance_interval_hours = 24
+# Safety limit of removals per run
+max_removals_per_run = 10
+# true = only log what would be removed
+dry_run = false

@@ -1,0 +1,19 @@
+[Unit]
+Description=Mesh bridge dashboard (web)
+# deliberately does NOT depend on mesh-bridge: the dashboard power switch
+# starts/stops the bridge, a dashboard restart must not start it
+After=network-online.target
+
+[Service]
+Type=simple
+# __BRIDGE_USER__/__BRIDGE_HOME__ are filled in by install.sh (current user)
+User=__BRIDGE_USER__
+Group=__BRIDGE_USER__
+WorkingDirectory=__BRIDGE_HOME__/mesh-bridge
+ExecStart=__BRIDGE_HOME__/mesh-bridge/venv/bin/python3 -u dashboard.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
