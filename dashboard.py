@@ -258,9 +258,12 @@ def query_history(days=30):
         return None
     finally:
         conn.close()
-    # udtrzba: kumulativni soucty (vsech bezu) + hodnoty posledniho behu
+    # udtrzba: kumulativni soucty (vsech bezu) + hodnoty posledniho behu;
+    # prelozene zpravy: celkove soucty podle smeru (session pocitadla
+    # posila status.json, celkove bereme ze SQLite)
     mc_t = mt_t = 0
     maint = {"mc_last": 0, "mt_last": 0, "last_ts": None}
+    fwd_total = {"mc_to_mt": 0, "mt_to_mc": 0}
     try:
         conn = db_connect()
         try:
@@ -276,6 +279,11 @@ def query_history(days=30):
                 mc_t += mc
                 mt_t += mt
                 maint = {"mc_last": mc, "mt_last": mt, "last_ts": r["ts"]}
+            for r in conn.execute(
+                    "SELECT direction, COUNT(*) AS c FROM log"
+                    " WHERE kind='forward' GROUP BY direction"):
+                if r["direction"] in fwd_total:
+                    fwd_total[r["direction"]] = r["c"]
         finally:
             conn.close()
     except sqlite3.Error:
@@ -291,6 +299,7 @@ def query_history(days=30):
         "mt_up": [round(min(100, secs[d]["mt"] / denom[d] * 100), 1)
                   for d in range(days)],
         "maint": maint,
+        "fwd_total": fwd_total,
     }
 
 
@@ -602,6 +611,7 @@ const I18N = {
     b_health: "health check FAILED",
     from: "from ",
     maint_val: "last {last} · total {total} ",
+    sess_val: "session {s} · total {total} ",
     ch_title: "Bridged channel",
     ch_hint: "Live credentials of the bridged channel (from the bridge configuration). In MeshCore a channel is defined by its key, not its name — share the key only with people you want in the channel. In Meshtastic the channel is public by convention.",
     search_ph: "Search…",
@@ -694,6 +704,7 @@ const I18N = {
     b_health: "health kontrola SELHALA",
     from: "od ",
     maint_val: "poslední {last} · celkem {total} ",
+    sess_val: "session {s} · celkem {total} ",
     ch_title: "Sdílený kanál",
     ch_hint: "Živé přístupové údaje bridgovaného kanálu (ze skutečné konfigurace bridge). V MeshCore kanál definuje klíč, ne název — klíč sdílej jen s kýmkoli má mít přístup. V Meshtastic je kanál veřejný podle konvence.",
     search_ph: "Hledat…",
@@ -929,11 +940,14 @@ function renderCards(st) {
     ? '<span class="dot"></span>' + esc(t("bridge_off"))
     : (on ? '<span class="dot on"></span>' + esc(t("conn_on"))
           : '<span class="dot off"></span>' + esc(t("conn_off")));
+  const fwd = (history && history.fwd_total) || {};
   const cards = [
     [t("card_mc"), conn(st.mc_connected)],
     [t("card_mt"), conn(st.mt_connected)],
-    [t("card_fwd"), s.mc_to_mt ?? 0],
-    [t("card_back"), s.mt_to_mc ?? 0],
+    [t("card_fwd"), tf("sess_val", {s: s.mc_to_mt ?? 0,
+                                    total: fwd.mc_to_mt || 0})],
+    [t("card_back"), tf("sess_val", {s: s.mt_to_mc ?? 0,
+                                     total: fwd.mt_to_mc || 0})],
     [t("card_queues"), (st.queue_mc||0) + " / " + (st.queue_mt||0)],
     [t("card_maint_mc"), tf("maint_val", {last: (history && history.maint && history.maint.mc_last) || 0,
                                            total: (history && history.maint && history.maint.mc_total) || 0})
