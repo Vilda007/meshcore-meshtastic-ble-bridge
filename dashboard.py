@@ -332,6 +332,7 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mesh bridge</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij4KICA8IS0tIE1lc2hDb3JlIDwtPiBNZXNodGFzdGljIEJMRSBicmlkZ2UgbG9nbyAtLT4KICA8cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI4IiBmaWxsPSIjMGYxMjE2Ii8+CiAgPHJlY3QgeD0iNSIgeT0iNSIgd2lkdGg9IjExOCIgaGVpZ2h0PSIxMTgiIHJ4PSIyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjYyZDM2IiBzdHJva2Utd2lkdGg9IjIuNSIvPgoKICA8IS0tIHJhZGlvIHdhdmVzOiBNZXNoQ29yZSAoZ3JlZW4pIC0tPgogIDxwYXRoIGQ9Ik0gMjYgNjIgYSA4IDggMCAwIDEgMTIgMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjN2VjNDZlIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik0gMjIgNTIgYSAxNCAxNCAwIDAgMSAyMCAwIiBmaWxsPSJub25lIiBzdHJva2U9IiM3ZWM0NmUiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBvcGFjaXR5PSIwLjU1Ii8+CgogIDwhLS0gcmFkaW8gd2F2ZXM6IE1lc2h0YXN0aWMgKGJsdWUpIC0tPgogIDxwYXRoIGQ9Ik0gOTAgNjIgYSA4IDggMCAwIDEgMTIgMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmVhOGQ4IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik0gODYgNTIgYSAxNCAxNCAwIDAgMSAyMCAwIiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZWE4ZDgiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBvcGFjaXR5PSIwLjU1Ii8+CgogIDwhLS0gYnJpZGdlIGFyY2ggKyBkZWNrIC0tPgogIDxwYXRoIGQ9Ik0gMzIgNzggUSA2NCA0MCA5NiA3OCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NmEzIiBzdHJva2Utd2lkdGg9IjQiLz4KICA8cGF0aCBkPSJNIDMwIDg0IEggOTgiIHN0cm9rZT0iI2RiZTJlYSIgc3Ryb2tlLXdpZHRoPSI3IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KCiAgPCEtLSBweWxvbnMgLS0+CiAgPHBhdGggZD0iTSAzMiA4NCBWIDEwMCIgc3Ryb2tlPSIjZGJlMmVhIiBzdHJva2Utd2lkdGg9IjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgb3BhY2l0eT0iMC45Ii8+CiAgPHBhdGggZD0iTSA5NiA4NCBWIDEwMCIgc3Ryb2tlPSIjZGJlMmVhIiBzdHJva2Utd2lkdGg9IjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgb3BhY2l0eT0iMC45Ii8+CgogIDwhLS0gbm9kZXMgLS0+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIxMDYiIHI9IjExIiBmaWxsPSIjN2VjNDZlIi8+CiAgPGNpcmNsZSBjeD0iOTYiIGN5PSIxMDYiIHI9IjExIiBmaWxsPSIjNmVhOGQ4Ii8+CgogIDwhLS0gQkxFIHNwYXJrIGJldHdlZW4gbm9kZXMgLS0+CiAgPHBhdGggZD0iTSA1NCAxMDYgSCA3NCIgc3Ryb2tlPSIjNTVjNThhIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1kYXNoYXJyYXk9IjIgNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=">
 <style>
 :root {
   --bg: #0f1216; --panel: #171c22; --line: #262d36; --fg: #dbe2ea;
@@ -479,7 +480,8 @@ footer { color:var(--dim); font-size:12px; margin-top:16px; }
 </head>
 <body>
 <div class="wrap">
-  <h1>Mesh bridge <span class="sub">MeshCore &harr; Meshtastic</span>
+  <h1><svg width="26" height="26" viewBox="0 0 128 128" aria-hidden="true" style="vertical-align:-4px"><rect width="128" height="128" rx="28" fill="var(--panel)"/><path d="M 26 62 a 8 8 0 0 1 12 0" fill="none" stroke="#7ec46e" stroke-width="10" stroke-linecap="round"/><path d="M 90 62 a 8 8 0 0 1 12 0" fill="none" stroke="#6ea8d8" stroke-width="10" stroke-linecap="round"/><path d="M 32 78 Q 64 40 96 78" fill="none" stroke="#8b96a3" stroke-width="7"/><path d="M 30 84 H 98" stroke="#dbe2ea" stroke-width="10" stroke-linecap="round"/><circle cx="32" cy="106" r="13" fill="#7ec46e"/><circle cx="96" cy="106" r="13" fill="#6ea8d8"/><path d="M 54 106 H 74" stroke="#55c58a" stroke-width="4" stroke-dasharray="3 7" stroke-linecap="round"/></svg>
+      Mesh bridge <span class="sub">MeshCore &harr; Meshtastic</span>
       <button id="powerBtn" class="off"><span class="pk"></span>
       <span id="powerTxt">…</span></button>
       <button id="langBtn" title="Language / Jazyk">🇬🇧 EN</button>
@@ -936,14 +938,19 @@ function filterKey(ev) {
 
 function renderCards(st) {
   const s = st.stats || {};
-  const conn = on => power.on === false
-    ? '<span class="dot"></span>' + esc(t("bridge_off"))
-    : (on ? '<span class="dot on"></span>' + esc(t("conn_on"))
-          : '<span class="dot off"></span>' + esc(t("conn_off")));
+  const conn = (on, node) => {
+    if (power.on === false)
+      return '<span class="dot"></span>' + esc(t("bridge_off"));
+    if (on)
+      return '<span class="dot on"></span>'
+        + (node ? ' <span class="hex">' + esc(node) + "</span>"
+                : " " + esc(t("conn_on")));
+    return '<span class="dot off"></span>' + esc(t("conn_off"));
+  };
   const fwd = (history && history.fwd_total) || {};
   const cards = [
-    [t("card_mc"), conn(st.mc_connected)],
-    [t("card_mt"), conn(st.mt_connected)],
+    [t("card_mc"), conn(st.mc_connected, st.mc_node)],
+    [t("card_mt"), conn(st.mt_connected, st.mt_node)],
     [t("card_fwd"), tf("sess_val", {s: s.mc_to_mt ?? 0,
                                     total: fwd.mc_to_mt || 0})],
     [t("card_back"), tf("sess_val", {s: s.mt_to_mc ?? 0,

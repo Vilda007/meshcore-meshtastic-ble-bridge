@@ -31,6 +31,7 @@ import os
 import signal
 import socket
 import sqlite3
+import subprocess
 import sys
 import time
 from collections import OrderedDict
@@ -362,6 +363,9 @@ class MqttSide:
             c = mqtt.Client(client_id="mesh-bridge")
         if self.cfg.mqtt_user:
             c.username_pw_set(self.cfg.mqtt_user, self.cfg.mqtt_password or None)
+        p = self.cfg.mqtt_topic_prefix
+        # LWT: az bridge spadne/ho nekdo zastavi, HA entity prejdou na unavailable
+        c.will_set(f"{p}/availability", "offline", retain=True)
         c.on_connect = self._on_connect
         c.on_disconnect = self._on_disconnect
         c.on_message = self._on_message
@@ -400,9 +404,25 @@ class MqttSide:
         """Nejvyssi uroven pro Bridge._mqtt_pub (neblokuje, vlastni vlakno)."""
         if self.client and self.connected:
             try:
+                if isinstance(payload, str):
+                    body = payload          # plain retezec bez JSON uvozovek
+                else:
+                    body = json.dumps(payload, ensure_ascii=False)
                 self.client.publish(
                     f"{self.cfg.mqtt_topic_prefix}/{subtopic}",
-                    json.dumps(payload, ensure_ascii=False), retain=retain, qos=0)
+                    body, retain=retain, qos=0)
+            except Exception:
+                pass
+
+    def publish_topic(self, topic, payload, retain=False):
+        """Publish na cely topic BEZ topic_prefix (HA discovery)."""
+        if self.client and self.connected:
+            try:
+                if isinstance(payload, str):
+                    body = payload
+                else:
+                    body = json.dumps(payload, ensure_ascii=False)
+                self.client.publish(topic, body, retain=retain, qos=0)
             except Exception:
                 pass
 
@@ -418,10 +438,12 @@ class MqttSide:
         if self._rc_ok(rc):
             self.connected = True
             log.info("MQTT: pripojeno")
+            p = self.cfg.mqtt_topic_prefix
+            client.publish(f"{p}/availability", "online", retain=True)
+            client.subscribe(f"{p}/cmd")   # ovladaci prikazy (restart)
             if self.cfg.mqtt_allow_inbound:
-                client.subscribe(f"{self.cfg.mqtt_topic_prefix}/send")
-                log.info("MQTT: odber %s/send (inbound do site)",
-                         self.cfg.mqtt_topic_prefix)
+                client.subscribe(f"{p}/send")
+                log.info("MQTT: odber %s/send (inbound do site)", p)
         else:
             log.warning("MQTT: broker odmitl spojeni (rc=%s)", rc)
 
@@ -609,6 +631,11 @@ class Bridge:
             self.my_id = f"!{iface.myInfo.my_node_num:08x}"
         except Exception:
             self.my_id = None
+        # citelne jmeno zarizeni (pro dashboard/HA status)
+        try:
+            self.mt_node_name = iface.getLongName() or self.my_id
+        except Exception:
+            self.mt_node_name = self.my_id
         log.info("MT: pripojeno (self=%s)", self.my_id)
         # hodiny: Meshtastic nema cteni casu, nastavime rovnou
         try:
@@ -865,7 +892,7 @@ class Bridge:
                 "mc_connected": bool(self.mc and self.mc.connected),
                 "mc_node": (self.mc.info or {}).get("name", self.cfg.mc_device),
                 "mt_connected": bool(self.mt),
-                "mt_node": self.my_id,
+                "mt_node": getattr(self, "mt_node_name", self.my_id),
                 "mappings": [list(p) for p in self.mappings],
                 "stats": self.stats,
                 "queue_mc": len(self.mc_pending),
@@ -921,6 +948,11 @@ class Bridge:
             self.mqtt.publish(subtopic, payload, retain=retain)
 
     async def _on_mqtt_inbound(self, msg):
+        """Dispatch zprav z <prefix>/send a <prefix>/cmd."""
+        prefix = self.cfg.mqtt_topic_prefix
+        if msg.topic == f"{prefix}/cmd":
+            await self._on_mqtt_cmd(msg)
+            return
         """<prefix>/send: {"side":"mc"|"mt","channel":int,"text":str} -> sit."""
         try:
             data = json.loads(msg.payload.decode("utf-8", "replace"))
@@ -955,6 +987,28 @@ class Bridge:
             log.warning("MQTT: neznama strana %r nebo strana nepripojena",
                         side)
 
+    async def _on_mqtt_cmd(self, msg):
+        """<prefix>/cmd: {"cmd":"restart"} -- restart bridge pres systemd."""
+        try:
+            data = json.loads(msg.payload.decode("utf-8", "replace"))
+            cmd = str(data.get("cmd") or "").lower()
+        except (ValueError, AttributeError, UnicodeDecodeError,
+                json.JSONDecodeError):
+            log.warning("MQTT: neplatny prikaz na %s: %r",
+                        msg.topic, msg.payload[:80])
+            return
+        if cmd != "restart":
+            log.warning("MQTT: neznamy prikaz %r (zname: restart)", cmd)
+            return
+        log.warning("MQTT: prikaz restart -- restartuji mesh-bridge")
+        await self._elog("mqtt", side="cmd", src="mqtt", text="restart")
+        try:
+            subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "--no-block",
+                            "restart", "mesh-bridge"],
+                           capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning("MQTT: restart selhal: %r", e)
+
     async def _mqtt_status_loop(self):
         """Retained status na <prefix>/status co 60 s (home automation).
 
@@ -968,7 +1022,10 @@ class Bridge:
             status = {
                 "updated": int(time.time()),
                 "mc_connected": bool(self.mc and self.mc.connected),
+                "mc_node": (self.mc.info or {}).get("name",
+                                                   self.cfg.mc_device),
                 "mt_connected": bool(self.mt),
+                "mt_node": getattr(self, "mt_node_name", self.my_id),
                 "health_ok": self._watchdog_healthy,
                 "mappings": [list(p) for p in self.mappings],
                 "stats": self.stats,
@@ -976,52 +1033,78 @@ class Bridge:
                 "queue_mt": len(self.mt_pending),
             }
             self._mqtt_pub("status", status, retain=True)
+            # binarni stavy a jmena zarzeni jako plain topicy (bez sablon);
+            # POZOR: HA 2026+ MQTT binary_sensor default payload je
+            # "ON"/"OFF" velkymi pismeny a porovnava presne!
+            self._mqtt_pub("mc/connected",
+                           "ON" if status["mc_connected"] else "OFF",
+                           retain=True)
+            self._mqtt_pub("mt/connected",
+                           "ON" if status["mt_connected"] else "OFF",
+                           retain=True)
+            self._mqtt_pub("health",
+                           "ON" if status["health_ok"] else "OFF",
+                           retain=True)
+            self._mqtt_pub("mc/node", status["mc_node"], retain=True)
+            self._mqtt_pub("mt/node", status["mt_node"], retain=True)
             if self.cfg.mqtt_hass_discovery:
                 self._mqtt_hass_discovery()
 
     def _mqtt_hass_discovery(self):
-        """HA MQTT discovery pod homeassistant/<typ>/<uid>/config (retained)."""
+        """HA MQTT discovery na homeassistant/<typ>/<uid>/config (retained).
+
+        Topic je pevny prefix 'homeassistant' (NE pod topic_prefix);
+        vsechny entity maji availability_topic (LWT offline pri zastaveni).
+        """
         p = self.cfg.mqtt_topic_prefix
         st = f"{p}/status"
+        avail = f"{p}/availability"
         device = {"identifiers": ["meshbridge"], "name": "Mesh Bridge",
                   "manufacturer": "meshcore-meshtastic-ble-bridge"}
         items = [
-            ("binary_sensor", "meshbridge_mc", "MeshCore connected",
-             "{{ value_json.mc_connected }}", "connectivity"),
-            ("binary_sensor", "meshbridge_mt", "Meshtastic connected",
-             "{{ value_json.mt_connected }}", "connectivity"),
-            ("binary_sensor", "meshbridge_health", "Bridge health",
-             "{{ value_json.health_ok }}", None),
+            # binarni stavy: plain topicky (meshbridge/mc/connected = on/off),
+            # bez value_template -- spolehlive na vsech verzich HA;
+            # unique_id *_v2 -- HA pri "update" jiz existujici entity
+            # neprepina jeji interni payload/template, cerstve unique_id
+            # = vzdy funkcni entity objekt
+            ("binary_sensor", "meshbridge_mc_v2", "MeshCore connected",
+             f"{p}/mc/connected", "connectivity", None),
+            ("binary_sensor", "meshbridge_mt_v2", "Meshtastic connected",
+             f"{p}/mt/connected", "connectivity", None),
+            ("binary_sensor", "meshbridge_health_v2", "Bridge health",
+             f"{p}/health", None, None),
+            ("sensor", "meshbridge_mc_node_v2", "MeshCore node",
+             f"{p}/mc/node", None, None),
+            ("sensor", "meshbridge_mt_node_v2", "Meshtastic node",
+             f"{p}/mt/node", None, None),
+            # cisla ze status JSON (templaty zde funguji)
             ("sensor", "meshbridge_mc_to_mt", "Forwarded MC→MT",
-             "{{ value_json.stats.mc_to_mt }}", None),
+             st, None, "{{ value_json.stats.mc_to_mt }}"),
             ("sensor", "meshbridge_mt_to_mc", "Forwarded MT→MC",
-             "{{ value_json.stats.mt_to_mc }}", None),
+             st, None, "{{ value_json.stats.mt_to_mc }}"),
             ("sensor", "meshbridge_mc_repeated", "Repeater echoes",
-             "{{ value_json.stats.mc_repeated }}", None),
+             st, None, "{{ value_json.stats.mc_repeated }}"),
             ("sensor", "meshbridge_queue_mc", "Queue MC",
-             "{{ value_json.queue_mc }}", None),
+             st, None, "{{ value_json.queue_mc }}"),
             ("sensor", "meshbridge_queue_mt", "Queue MT",
-             "{{ value_json.queue_mt }}", None),
+             st, None, "{{ value_json.queue_mt }}"),
             ("sensor", "meshbridge_last_mc", "Last MeshCore message",
-             "{{ value_json.text }}", None),
+             f"{p}/mc/recv", None, "{{ value_json.text }}"),
             ("sensor", "meshbridge_last_mt", "Last Meshtastic message",
-             "{{ value_json.text }}", None),
+             f"{p}/mt/recv", None, "{{ value_json.text }}"),
         ]
-        topics = {  # sensor posledni zpravy cte jiny topic nez status
-            "meshbridge_last_mc": (f"{p}/mc/recv", None),
-            "meshbridge_last_mt": (f"{p}/mt/recv", None),
-        }
-        for typ, uid, name, tpl, dev_class in items:
+        for typ, uid, name, state_topic, dev_class, tpl in items:
             cfg = {"name": name, "unique_id": uid, "device": device,
-                   "value_template": tpl}
-            if uid in topics:
-                cfg["state_topic"] = topics[uid][0]
-            else:
-                cfg["state_topic"] = st
+                   "state_topic": state_topic,
+                   "availability_topic": avail,
+                   "payload_available": "online",
+                   "payload_not_available": "offline"}
+            if tpl:
+                cfg["value_template"] = tpl
             if dev_class:
                 cfg["device_class"] = dev_class
-            self.mqtt.publish(f"homeassistant/{typ}/{uid}/config",
-                              cfg, retain=True)
+            self.mqtt.publish_topic(f"homeassistant/{typ}/{uid}/config",
+                                    cfg, retain=True)
 
     async def _mc_secret(self, mc_idx):
         """16bajtovy klic MC kanalu (cache; None = neznamy/prazdny slot)."""

@@ -1,5 +1,9 @@
 # MeshCore ↔ Meshtastic BLE Bridge
 
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="MeshCore ↔ Meshtastic BLE bridge logo">
+</p>
+
 A self-contained Bluetooth Low Energy bridge between two LoRa mesh networks:
 [MeshCore](https://github.com/ripplebiz/MeshCore) and
 [Meshtastic](https://github.com/meshtastic/firmware). It runs on a single
@@ -387,14 +391,23 @@ Publishes (JSON, QoS 0):
 |---|---|
 | `<prefix>/mc/recv` | `{"ts","channel","text"}` — every MeshCore channel message (all channels, not just bridged) |
 | `<prefix>/mt/recv` | `{"ts","channel","src","text"}` — every Meshtastic channel message |
-| `<prefix>/status` | Bridge status (retained, every 60 s): connections, health, counters, queues, mappings |
-| `homeassistant/<type>/<uid>/config` | HA MQTT discovery (retained) — bridge entities appear in HA automatically (device *Mesh Bridge*: MeshCore/Meshtastic connectivity, health, forwarded counters, repeater echoes, queues, last messages) |
+| `<prefix>/status` | Bridge status (retained, every 60 s): connections, node names, health, counters, queues, mappings |
+| `<prefix>/mc/connected` · `/mt/connected` · `/health` | `ON`/`OFF` (retained, plain strings) |
+| `<prefix>/mc/node` · `/mt/node` | Connected device names (retained, plain strings) |
+| `<prefix>/availability` | `online`/`offline` (retained; offline via MQTT Last-Will) |
+| `homeassistant/<type>/<uid>/config` | HA MQTT discovery (retained) — bridge entities appear in HA automatically (device *Mesh Bridge*: MeshCore/Meshtastic connectivity + node names, health, forwarded counters, repeater echoes, queues, last messages) |
 
-Inbound (`allow_inbound = true`, subscribe only):
+Inbound (subscribed):
 
 | Topic | Payload |
 |---|---|
 | `<prefix>/send` | `{"side": "mc"\|"mt", "channel": <idx>, "text": "..."}` → sent into the mesh on that side (rate limits apply) |
+| `<prefix>/cmd` | `{"cmd": "restart"}` → restarts the `mesh-bridge` service via systemd |
+
+> ⚠️ **HA gotcha**: Home Assistant 2026.x MQTT `binary_sensor` defaults are
+> `ON`/`OFF` **uppercase, exact match** — that's why the plain state topics
+> publish uppercase. Plain-string topics (no `value_template`) also avoid
+> discovery-update quirks.
 
 > ⚠️ **Inbound security**: anyone with broker credentials can post into
 > your mesh. Point the bridge at a trusted broker, use a dedicated

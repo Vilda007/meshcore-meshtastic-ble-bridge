@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- MeshCore <-> Meshtastic BLE bridge logo -->
+  <rect width="128" height="128" rx="28" fill="#0f1216"/>
+  <rect x="5" y="5" width="118" height="118" rx="24" fill="none" stroke="#262d36" stroke-width="2.5"/>
+
+  <!-- radio waves: MeshCore (green) -->
+  <path d="M 26 62 a 8 8 0 0 1 12 0" fill="none" stroke="#7ec46e" stroke-width="3" stroke-linecap="round"/>
+  <path d="M 22 52 a 14 14 0 0 1 20 0" fill="none" stroke="#7ec46e" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
+
+  <!-- radio waves: Meshtastic (blue) -->
+  <path d="M 90 62 a 8 8 0 0 1 12 0" fill="none" stroke="#6ea8d8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M 86 52 a 14 14 0 0 1 20 0" fill="none" stroke="#6ea8d8" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
+
+  <!-- bridge arch + deck -->
+  <path d="M 32 78 Q 64 40 96 78" fill="none" stroke="#8b96a3" stroke-width="4"/>
+  <path d="M 30 84 H 98" stroke="#dbe2ea" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- pylons -->
+  <path d="M 32 84 V 100" stroke="#dbe2ea" stroke-width="7" stroke-linecap="round" opacity="0.9"/>
+  <path d="M 96 84 V 100" stroke="#dbe2ea" stroke-width="7" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- nodes -->
+  <circle cx="32" cy="106" r="11" fill="#7ec46e"/>
+  <circle cx="96" cy="106" r="11" fill="#6ea8d8"/>
+
+  <!-- BLE spark between nodes -->
+  <path d="M 54 106 H 74" stroke="#55c58a" stroke-width="3" stroke-dasharray="2 5" stroke-linecap="round"/>
+</svg>
