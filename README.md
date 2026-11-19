@@ -241,6 +241,8 @@ Configuration has **three layers** (lower overrides higher):
 | | `topic_prefix` | `meshbridge` | Prefix for all bridge topics |
 | | `allow_inbound` | `false` | Accept `<prefix>/send` messages **into the mesh** |
 | | `hass_discovery` | `true` | Publish HA MQTT discovery (entities auto-appear) |
+| | `publish_nodes` | `true` | Publish node-info/telemetry topics (mc/self, mt/nodes) |
+| `[forward]` | `position_mc_to_mt` | `false` | Opt-in: MeshCore node position → Meshtastic position packet |
 
 Items marked **↻** apply only after a service restart (the Config page
 marks them the same way).
@@ -394,6 +396,8 @@ Publishes (JSON, QoS 0):
 | `<prefix>/status` | Bridge status (retained, every 60 s): connections, node names, health, counters, queues, mappings |
 | `<prefix>/mc/connected` · `/mt/connected` · `/health` | `ON`/`OFF` (retained, plain strings) |
 | `<prefix>/mc/node` · `/mt/node` | Connected device names (retained, plain strings) |
+| `<prefix>/mc/self` | MeshCore `SELF_INFO` incl. its position, every 60 s (`mqtt.publish_nodes`) |
+| `<prefix>/mt/nodes/<id>` | Meshtastic POSITION/TELEMETRY/NODEINFO packets heard on the air (`mqtt.publish_nodes`) |
 | `<prefix>/availability` | `online`/`offline` (retained; offline via MQTT Last-Will) |
 | `homeassistant/<type>/<uid>/config` | HA MQTT discovery (retained) — bridge entities appear in HA automatically (device *Mesh Bridge*: MeshCore/Meshtastic connectivity + node names, health, forwarded counters, repeater echoes, queues, last messages) |
 
@@ -513,9 +517,10 @@ on the radios), with a web dashboard, offline queues and device maintenance.
 ## Roadmap / TODO
 
 Ideas for future versions — some inspired by the projects above
-(the first seven have since been implemented, see *Delivery confirmation*,
+(the first eight have since been implemented, see *Delivery confirmation*,
 *Watchdog hardening*, the i18n dashboard, *Persistent statistics*, the
-auth + Config page, *MQTT* and *Rate limiting* above):
+auth + Config page, *MQTT*, *Rate limiting* and the position/node-info
+forwarding above):
 
 - [x] **Delivery confirmation** — track MeshCore repeater echoes to
       report whether a forwarded message actually went out over the air
@@ -541,8 +546,12 @@ auth + Config page, *MQTT* and *Rate limiting* above):
       gotify / MQTT)
 - [ ] **DM bridging (opt-in)** — relay direct messages to a configured
       counterpart contact; off by default (privacy)
-- [ ] **Position/node-info/telemetry forwarding** (opt-in) — e.g. MeshCore
-      advert → Meshtastic position packet
+- [x] **Position/node-info/telemetry forwarding** (opt-in) —
+      `mqtt.publish_nodes` streams the MeshCore node's SELF_INFO (incl.
+      position) and every Meshtastic POSITION/TELEMETRY/NODEINFO packet
+      to MQTT (feed for HA/dashboards); `forward.position_mc_to_mt`
+      forwards the MeshCore node's position as a Meshtastic position
+      packet (on change or every 6 h, unset positions skipped)
 - [ ] **Discord/Matrix gateway** (à la hoplink)
 - [ ] **Multi-radio support** — more than one node per side
 - [ ] **Packaging** — Docker image / PyPI package for non-Pi hosts

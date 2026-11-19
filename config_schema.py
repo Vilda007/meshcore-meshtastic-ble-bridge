@@ -139,6 +139,14 @@ CONFIG_SCHEMA = {
     "mqtt.hass_discovery": {
         "label": "Publish Home Assistant MQTT discovery (entities auto-appear)",
         "type": "bool", "restart": False, "section": "MQTT"},
+    "mqtt.publish_nodes": {
+        "label": "Publish node-info/telemetry topics (mc/self, mt/nodes/<id>)",
+        "type": "bool", "restart": False, "section": "MQTT"},
+    # ---------------- forwarding (opt-in) ----------------
+    "forward.position_mc_to_mt": {
+        "label": "Forward the MeshCore node's position to Meshtastic "
+                 "(sendPosition; on change or every 6 h)",
+        "type": "bool", "restart": False, "section": "Forwarding (opt-in)"},
 }
 
 
@@ -177,6 +185,8 @@ CONFIG_ATTR = {
     "mqtt.topic_prefix": "mqtt_topic_prefix",
     "mqtt.allow_inbound": "mqtt_allow_inbound",
     "mqtt.hass_discovery": "mqtt_hass_discovery",
+    "mqtt.publish_nodes": "mqtt_publish_nodes",
+    "forward.position_mc_to_mt": "forward_position_mc_to_mt",
 }
 
 

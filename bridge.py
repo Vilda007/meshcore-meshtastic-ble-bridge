@@ -154,6 +154,12 @@ class Config:
                                   .strip() or "meshbridge")
         self.mqtt_allow_inbound = mq.getboolean("allow_inbound", False)
         self.mqtt_hass_discovery = mq.getboolean("hass_discovery", True)
+        self.mqtt_publish_nodes = mq.getboolean("publish_nodes", True)
+
+        # opt-in preposilani pozice/node-info (sekce [forward])
+        fw = ini["forward"] if ini.has_section("forward") else {}
+        self.forward_position_mc_to_mt = fw.getboolean("position_mc_to_mt",
+                                                       False)
 
         # prekryti z SQLite (tabulka 'config' ve stats.db; ridi ji dashboard
         # Config stranka) -- ini zustava bootstrapem a zdrojem defaultu
@@ -741,6 +747,9 @@ class Bridge:
         try:
             decoded = packet.get("decoded", {})
             if decoded.get("portnum") != "TEXT_MESSAGE":
+                # opt-in: node-info/telemetry -> MQTT (HA feed)
+                if self.cfg.mqtt_publish_nodes:
+                    self._mt_nodeinfo_mqtt(packet, decoded)
                 return
             text = decoded.get("text")
             if not text:
@@ -1047,6 +1056,9 @@ class Bridge:
                            retain=True)
             self._mqtt_pub("mc/node", status["mc_node"], retain=True)
             self._mqtt_pub("mt/node", status["mt_node"], retain=True)
+            if self.cfg.mqtt_publish_nodes:
+                self._publish_mc_self()
+            await self._forward_mc_position()
             if self.cfg.mqtt_hass_discovery:
                 self._mqtt_hass_discovery()
 
@@ -1274,6 +1286,63 @@ class Bridge:
             self._mt_broken(f"setTime timeout (>{MT_OP_TIMEOUT} s)")
         except Exception as e:
             log.warning("MT: nastaveni hodin selhalo: %r", e)
+
+    def _mt_nodeinfo_mqtt(self, packet, decoded):
+        """POSITION/TELEMETRY/NODEINFO paket -> <prefix>/mt/nodes/<id>.
+
+        Data se jen preprijou (zadne sifrovani ani bridge logika); topic
+        schema je stabilni, entity v HA si uzivatel vytvori dle chuti.
+        """
+        try:
+            nid = packet.get("fromId") or ""
+            if not nid or nid == self.my_id:
+                return
+            payload = {"ts": time.time(), "src": nid,
+                       "port": decoded.get("portnum")}
+            for key in ("position", "telemetry", "user"):
+                if isinstance(decoded.get(key), dict):
+                    payload[key] = decoded[key]
+            if len(payload) <= 3:
+                return
+            if packet.get("rxRssi") is not None:
+                payload["rssi"] = packet.get("rxRssi")
+            if packet.get("rxSnr") is not None:
+                payload["snr"] = packet.get("rxSnr")
+            self._mqtt_pub(f"mt/nodes/{nid.lstrip('!')}", payload)
+        except Exception:
+            log.exception("MT: chyba pri publikovani node-info")
+
+    def _publish_mc_self(self):
+        """SELF_INFO MeshCore uzlu -> <prefix>/mc/self (bez pub_key)."""
+        if not (self.mc and self.mc.info):
+            return
+        info = {k: v for k, v in self.mc.info.items() if k != "pub_key"}
+        self._mqtt_pub("mc/self", dict(info, ts=time.time()))
+
+    async def _forward_mc_position(self):
+        """Opt-in: pozice MeshCore uzlu -> Meshtastic sendPosition.
+
+        Posila se jen pri zmene pozice, nebo jednou za 6 h (pozice
+        nezmenena); pozice 0/0 (nenastavena) se preskakuje.
+        """
+        if not (self.cfg.forward_position_mc_to_mt and self.mt and self.mc):
+            return
+        info = self.mc.info or {}
+        lat, lon = info.get("lat", 0.0), info.get("lon", 0.0)
+        if not lat or not lon:
+            return
+        now = time.monotonic()
+        if (lat, lon) == getattr(self, "_fwd_pos_last", None) \
+                and now - getattr(self, "_fwd_pos_ts", 0.0) < 6 * 3600:
+            return
+        try:
+            await asyncio.wait_for(self.loop.run_in_executor(
+                None, lambda: self.mt.sendPosition(lat, lon)), 15)
+            self._fwd_pos_last, self._fwd_pos_ts = (lat, lon), now
+            log.info("FORWARD: MC pozice %.5f,%.5f odeslana jako "
+                     "Meshtastic position paket", lat, lon)
+        except Exception as e:
+            log.warning("FORWARD: sendPosition selhal: %r", e)
 
     def _prune_log(self):
         """Smaze zaznamy ve feedu/statistikach starsi nez log_retention_days.

@@ -671,7 +671,9 @@ const I18N = {
       "mqtt.password": "Broker password. Stored in the SQLite config table; visible to admins only.",
       "mqtt.topic_prefix": "Prefix for all bridge topics: <prefix>/mc/recv, <prefix>/mt/recv, <prefix>/status and the inbound <prefix>/send.",
       "mqtt.allow_inbound": "Accept JSON messages from <prefix>/send into the mesh: {\"side\":\"mc\"|\"mt\",\"channel\":N,\"text\":\"...\"}. Anyone with broker credentials can post into your mesh — enable only on a trusted broker.",
-      "mqtt.hass_discovery": "Publish Home Assistant MQTT discovery (retained) so bridge entities appear in HA automatically (device 'Mesh Bridge': connectivity, counters, queues, last messages)."
+      "mqtt.hass_discovery": "Publish Home Assistant MQTT discovery (retained) so bridge entities appear in HA automatically (device 'Mesh Bridge': connectivity, counters, queues, last messages).",
+      "mqtt.publish_nodes": "Publish node-info/telemetry as MQTT topics: mc/self (MeshCore SELF_INFO incl. position), mt/nodes/<id> (POSITION/TELEMETRY/NODEINFO packets heard by the Meshtastic node). Read-only data for dashboards/HA.",
+      "forward.position_mc_to_mt": "Opt-in: forward the MeshCore node's own position (from SELF_INFO) as a Meshtastic position packet (sendPosition). Sent only when the position changes, or once every 6 h. Position 0/0 (unset) is never sent."
     }
   },
   cs: {
@@ -764,7 +766,9 @@ const I18N = {
       "mqtt.password": "Heslo brokera. Uložené v SQLite config tabulce; vidí jen admin.",
       "mqtt.topic_prefix": "Prefix všech témat bridge: <prefix>/mc/recv, <prefix>/mt/recv, <prefix>/status a inbound <prefix>/send.",
       "mqtt.allow_inbound": "Přijímá JSON zprávy z <prefix>/send do sítě: {\"side\":\"mc\"|\"mt\",\"channel\":N,\"text\":\"...\"}. KDOKOLI s přihlašovacími údaji brokera může poslat zprávu do tvé sítě — povol jen na důvěryhodném brokeru.",
-      "mqtt.hass_discovery": "Publikuje Home Assistant MQTT discovery (retained) — entity bridge se v HA objeví samy (device „Mesh Bridge“: spojení, čítače, fronty, poslední zprávy)."
+      "mqtt.hass_discovery": "Publikuje Home Assistant MQTT discovery (retained) — entity bridge se v HA objeví samy (device „Mesh Bridge“: spojení, čítače, fronty, poslední zprávy).",
+      "mqtt.publish_nodes": "Publikuje node-info/telemetrii na MQTT tématech: mc/self (SELF_INFO MeshCore uzlu včetně pozice), mt/nodes/<id> (POSITION/TELEMETRY/NODEINFO pakety, které Meshtastic uzel zaslechne). Jen data ke čtení pro dashboardy/HA.",
+      "forward.position_mc_to_mt": "Opt-in: přepošle vlastní pozici MeshCore uzlu (ze SELF_INFO) jako Meshtastic position paket (sendPosition). Posílá se jen při změně pozice, nebo jednou za 6 h. Pozice 0/0 (nastavená) se nikdy neposílá."
     }
   }
 };

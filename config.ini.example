@@ -75,6 +75,13 @@ topic_prefix = meshbridge
 allow_inbound = false
 # HA MQTT discovery (bridge entities auto-appear in Home Assistant)
 hass_discovery = true
+# Node-info/telemetry topics (mc/self, mt/nodes/<id>)
+publish_nodes = true
+
+[forward]
+# Opt-in: MeshCore node position -> Meshtastic position packet
+# (sendPosition; on change or every 6 h; position 0/0 is skipped)
+position_mc_to_mt = false
 
 [maintenance]
 # Prune MeshCore contacts inactive longer than this (favorites never removed)
