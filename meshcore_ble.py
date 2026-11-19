@@ -47,6 +47,8 @@ CMD_SET_CHANNEL = 0x20
 CMD_DEVICE_QUERY = 0x16
 CMD_GET_STATS = 56          # v8+; druhy bajt = sub-type statistiky
 STATS_TYPE_PACKETS = 2
+CMD_SET_AUTOADD_CONFIG = 58
+CMD_GET_AUTOADD_CONFIG = 59
 
 # typ payloadu v raw packetu (packet_format.md)
 PAYLOAD_TYPE_GRP_TXT = 0x05
@@ -69,6 +71,7 @@ PKT_CONTACT_MSG_RECV_V3 = 0x10
 PKT_CHANNEL_MSG_RECV_V3 = 0x11
 PKT_CHANNEL_INFO = 0x12
 PKT_STATS = 24              # RESP_CODE_STATS (0x18; viz stats_binary_frames.md)
+RESP_AUTOADD_CONFIG = 25    # odpoved na CMD_GET_AUTOADD_CONFIG (flags, max_hops)
 PKT_ADVERTISEMENT = 0x80
 PKT_ACK = 0x82
 PKT_MSG_WAITING = 0x83
@@ -541,6 +544,34 @@ class MeshCoreClient:
         if len(resp) >= 30:
             out["recv_errors"] = struct.unpack("<I", resp[26:30])[0]
         return out
+
+    async def get_autoadd_config(self):
+        """CMD_GET_AUTOADD_CONFIG -> {'flags': int, 'max_hops': int} / None.
+
+        MyMesh.cpp:2029 -- RESP_CODE_AUTOADD_CONFIG (25):
+          flags bit 0 = prepsat nejstarsi nefavoritni kontakt pri plne
+          tabulce (MAX_CONTACTS), bity 1-4 = auto-add typy
+          (0x02 chat, 0x04 repeater, 0x08 room server).
+        """
+        resp = await self._send_cmd(
+            bytes([CMD_GET_AUTOADD_CONFIG]),
+            expect={RESP_AUTOADD_CONFIG, PKT_ERROR}, timeout=10)
+        if resp is None or resp[0] != RESP_AUTOADD_CONFIG:
+            return None
+        return {"flags": resp[1],
+                "max_hops": resp[2] if len(resp) > 2 else 0}
+
+    async def set_autoadd_config(self, flags, max_hops=None):
+        """CMD_SET_AUTOADD_CONFIG; True = firmware prijal (a ulozil do NVS).
+
+        max_hops = None znamena "nezmenit" (bajt se neposle; fw necha
+        stavajici hodnotu).
+        """
+        payload = ([CMD_SET_AUTOADD_CONFIG, flags & 0xFF]
+                   + ([] if max_hops is None else [min(int(max_hops), 64)]))
+        resp = await self._send_cmd(bytes(payload),
+                                    expect={PKT_OK, PKT_ERROR}, timeout=10)
+        return bool(resp) and resp[0] == PKT_OK
 
     async def get_channel(self, channel_idx):
         """CMD_GET_CHANNEL -> {'idx','name','secret'}; None = prazdny slot/chyba.

@@ -14,7 +14,7 @@ FILES="bridge.py meshcore_ble.py config_schema.py pair_bt.py dashboard.py
        create_channel.py config.ini config.ini.example install.sh
        mesh-bridge.service mesh-dashboard.service sudoers.d-mesh-bridge
        README.md LICENSE .gitignore
-       setup_tbeam.py test_meshcore.py mt_serial_listen.py"
+       setup_tbeam.py test_meshcore.py mt_serial_listen.py set_mc_autoadd.py"
 
 # optional local-only files (exist only on the maintainer's machine)
 OPTIONAL="CLAUDE.md deploy.sh"

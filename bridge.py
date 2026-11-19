@@ -746,7 +746,11 @@ class Bridge:
     async def _handle_mt(self, packet):
         try:
             decoded = packet.get("decoded", {})
-            if decoded.get("portnum") != "TEXT_MESSAGE":
+            # pozor: po MessageToDict je portnum JMENO enumu, tedy
+            # "TEXT_MESSAGE_APP" (ne "TEXT_MESSAGE") -- viz lib
+            # mesh_interface.py (_handlePacketFromRadio) a jeji topic
+            # "meshtastic.receive.data.TEXT_MESSAGE_APP"
+            if decoded.get("portnum") != "TEXT_MESSAGE_APP":
                 # opt-in: node-info/telemetry -> MQTT (HA feed)
                 if self.cfg.mqtt_publish_nodes:
                     self._mt_nodeinfo_mqtt(packet, decoded)
@@ -754,12 +758,25 @@ class Bridge:
             text = decoded.get("text")
             if not text:
                 return
-            mc_ch = self._mc_for_mt(packet.get("channel", 0))
-            if mc_ch is None:
-                return  # kanal neni bridgovany
             from_id = packet.get("fromId")
             if self.my_id and from_id == self.my_id:
+                return  # nase vlastni zprava (telefon app / echo nasiho MC: preposilani)
+            # DM (adresovane konkretnimu uzlu) se nepreposiluji -- jen
+            # zpravy z kanalu; broadcast ma "to" = 0xffffffff
+            to_num = packet.get("to")
+            if to_num is not None and to_num not in (0, 0xFFFFFFFF):
+                log.info("MT RX: DM od %s na %s, nepreposluji se",
+                         from_id, packet.get("toId"))
                 return
+            # MQTT feed (home automation) -- vsechny kanaly, i nebridgovane
+            self._mqtt_pub("mt/recv", {
+                "ts": time.time(), "channel": packet.get("channel", 0),
+                "src": from_id, "text": text})
+            mc_ch = self._mc_for_mt(packet.get("channel", 0))
+            if mc_ch is None:
+                log.info("MT RX: kanal %d neni bridgovany, jen MQTT feed",
+                         packet.get("channel", 0))
+                return  # kanal neni bridgovany
             # ochrana proti zacykleni: obsah ktery uz byl prelozeny pres bridge
             if text.startswith(self.cfg.prefix_to_mt) or \
                text.startswith(self.cfg.prefix_to_mc):
@@ -767,10 +784,6 @@ class Bridge:
                 await self._elog("dropped", side="mt", reason="loop-guard",
                                  text=text[:120])
                 return
-            # MQTT feed (home automation) -- vsechny kanaly, i nebridgovane
-            self._mqtt_pub("mt/recv", {
-                "ts": time.time(), "channel": packet.get("channel", 0),
-                "src": from_id, "text": text})
             pid = packet.get("id")
             key = (f"mt:{pid}" if pid
                    else "mt:" + hashlib.md5(

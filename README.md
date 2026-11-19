@@ -288,8 +288,8 @@ venv/bin/python create_channel.py all
 sudo systemctl start mesh-bridge
 ```
 
-Then map the two channels in the dashboard (it prints the indices, e.g.
-`mappings.json: [[2, 1]]`).
+Then map the two channels in the dashboard (the script prints the channel
+indices it found/created, e.g. MC index 2 ↔ MT index 1).
 
 > **Sharing**: to let someone into the MeshCore side you must share the key
 > itself (the app supports invites). The Meshtastic side is joinable by name
@@ -392,7 +392,7 @@ Publishes (JSON, QoS 0):
 | Topic | Content |
 |---|---|
 | `<prefix>/mc/recv` | `{"ts","channel","text"}` — every MeshCore channel message (all channels, not just bridged) |
-| `<prefix>/mt/recv` | `{"ts","channel","src","text"}` — every Meshtastic channel message |
+| `<prefix>/mt/recv` | `{"ts","channel","src","text"}` — every Meshtastic channel message (all channels, not just bridged; messages sent by the bridge's own node are not echoed) |
 | `<prefix>/status` | Bridge status (retained, every 60 s): connections, node names, health, counters, queues, mappings |
 | `<prefix>/mc/connected` · `/mt/connected` · `/health` | `ON`/`OFF` (retained, plain strings) |
 | `<prefix>/mc/node` · `/mt/node` | Connected device names (retained, plain strings) |
@@ -439,12 +439,42 @@ Messages cannot pile up on the radios: MeshCore keeps a RAM queue only
 (16 messages, oldest overwritten) and vanilla Meshtastic firmware does not
 persist text messages at all.
 
+### Full contact/node tables (~100 entries)
+
+Both radios cap their directories — MeshCore companion firmware at
+`MAX_CONTACTS` (100), Meshtastic nodeDB at `MAX_NUM_NODES` (100 on ESP32) —
+and small nodes get sluggish near the limit. The daily pruning above keeps
+the tables well below it, but the behavior *at* the limit differs:
+
+- **Meshtastic**: nothing to configure — when the nodeDB is full, the
+  firmware automatically replaces the oldest node that is not a
+  favorite/ignored/key-verified (preferring nodes without a public key).
+- **MeshCore**: by default new contacts are *rejected* when the table is
+  full. `set_mc_autoadd.py` sets the firmware's auto-add config
+  (`CMD_SET_AUTOADD_CONFIG`) so a full table overwrites the oldest
+  **non-favorite** contact instead (the client app gets a
+  `CONTACT_DELETED` push):
+
+  ```bash
+  sudo systemctl stop mesh-bridge     # the radio holds one BLE link
+  venv/bin/python set_mc_autoadd.py config.ini --overwrite
+  sudo systemctl start mesh-bridge
+  ```
+
+  Without `--overwrite` the script just prints the current config.
+
 ## Troubleshooting & gotchas
 
 Collected the hard way — read this before filing issues:
 
 - **meshtastic lib**: admin `writeConfig` without `node.ensureSessionKey()`
   is silently dropped by firmware (≥ 2.5). Always call it first.
+- **meshtastic lib**: after `MessageToDict`, `packet["decoded"]["portnum"]`
+  is the enum **name** — `"TEXT_MESSAGE_APP"`, not `"TEXT_MESSAGE"`.
+  Comparing against the latter matches nothing, and since the same branch
+  is often used for node-info/telemetry handling, text messages vanish
+  without a trace. (This exact bug shipped in this bridge: the MT→MC
+  direction silently forwarded nothing for weeks until it was caught.)
 - **`power.ls_secs = 0` does not mean "off"** — it means "default 300 s".
   BLE does not work in light sleep; set a large value (e.g. 86400).
   `setup_tbeam.py` does this for you.
@@ -494,6 +524,7 @@ bluetoothctl info <MAC>                 # pairing state check
 | `config.ini.example` | Configuration template — copy to `config.ini` |
 | `pair_bt.py` | Non-interactive BlueZ pairing with fixed PINs |
 | `create_channel.py` | One-off shared-channel setup on both devices |
+| `set_mc_autoadd.py` | MeshCore contact auto-add config (overwrite-oldest when the contact table is full) |
 | `setup_tbeam.py` | One-off Meshtastic radio setup (light sleep off) |
 | `test_meshcore.py` | MeshCore BLE client smoke test |
 | `mt_serial_listen.py` | Meshtastic serial packet listener (debug helper) |
